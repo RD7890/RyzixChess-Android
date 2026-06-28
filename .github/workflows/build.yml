@@ -1,0 +1,250 @@
+name: Build Ryzix Chess APK
+
+on:
+  push:
+    branches:
+      - "main"
+      - "dev"
+      - "release/**"
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch: { }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+  TG_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build_release_apk:
+    name: Build Ryzix Chess APK
+    runs-on: ubuntu-latest
+
+    steps:
+      # ── 1. Notify: Build started ─────────────────────────────────────────
+      - name: Telegram — Build started
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '🔨 *Ryzix Chess v1.0 — Build Started*\n\n📌 Branch: `%s`\n🔢 Build: #%s\n📝 Commit: `%s`\n\n⚡ Downloading Ryzix Engine + assembling APK...' \
+              '${{ github.ref_name }}' '${{ github.run_number }}' "$SHORT_SHA")"
+
+      # ── 2. Checkout ──────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 3. Java ──────────────────────────────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── 4. Gradle cache ──────────────────────────────────────────────────
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/libs.versions.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      # ── 5. Download Ryzix Engine (libryzix.so) ───────────────────────────
+      # Downloads pre-compiled ARM64 engine from RD7890/Ryzix latest release.
+      # Falls back to compiling from source if no release exists.
+      - name: Download Ryzix Engine
+        run: |
+          set -e
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+
+          echo "Fetching latest Ryzix engine release..."
+          RELEASE_JSON=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/RD7890/Ryzix/releases/latest")
+
+          DOWNLOAD_URL=$(echo "$RELEASE_JSON" | \
+            python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          assets = [a for a in data.get('assets', []) if a['name'] == 'libryzix.so']
+          print(assets[0]['browser_download_url'] if assets else '')
+          " 2>/dev/null || echo "")
+
+          if [ -n "$DOWNLOAD_URL" ]; then
+            echo "Downloading from release: $DOWNLOAD_URL"
+            curl -fsSL "$DOWNLOAD_URL" -o app/src/main/jniLibs/arm64-v8a/libryzix.so
+            echo "Downloaded: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
+          else
+            echo "No release asset found — building Ryzix from source..."
+            sudo apt-get install -y --no-install-recommends build-essential
+
+            NDK_VERSION="r25c"
+            curl -fsSL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
+              -o /tmp/ndk.zip
+            unzip -q /tmp/ndk.zip -d /tmp/ndk
+            NDK_PATH="/tmp/ndk/android-ndk-${NDK_VERSION}"
+            CXX="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+
+            curl -fsSL https://github.com/RD7890/Ryzix/archive/refs/heads/main.tar.gz \
+              | tar -xz -C /tmp
+            "$CXX" -O2 -DNDEBUG -std=c++17 -static-libstdc++ -lm \
+              /tmp/Ryzix-main/src/ryzix.cpp \
+              -o app/src/main/jniLibs/arm64-v8a/libryzix.so
+            echo "Compiled: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
+          fi
+
+      # ── 6. Verify engine ─────────────────────────────────────────────────
+      - name: Verify Ryzix Engine binary
+        run: |
+          [ -f app/src/main/jniLibs/arm64-v8a/libryzix.so ] || { echo "FATAL: Missing libryzix.so"; exit 1; }
+          echo "OK: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
+          file app/src/main/jniLibs/arm64-v8a/libryzix.so || true
+
+      # ── 7. Signing keystore ───────────────────────────────────────────────
+      - name: Restore / generate signing keystore
+        run: |
+          mkdir -p signing
+          if [ -n "${{ secrets.SIGNING_KEYSTORE_B64 }}" ]; then
+            echo "Using stored keystore from SIGNING_KEYSTORE_B64 secret"
+            echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > signing/signing-key.jks
+            echo "Keystore restored: $(wc -c < signing/signing-key.jks) bytes"
+          else
+            echo "⚠️  No SIGNING_KEYSTORE_B64 secret — generating fresh keystore."
+            echo "   Save the base64 block below as GitHub secret SIGNING_KEYSTORE_B64"
+            keytool -genkeypair \
+              -alias RyzixChess -keypass 123456 \
+              -keystore signing/signing-key.jks \
+              -storepass 123456 \
+              -dname "CN=RyzixChess,OU=Dev,O=RDChess,L=India,S=India,C=IN" \
+              -keyalg RSA -keysize 2048 -validity 10000 -noprompt
+            echo "=== COPY THIS AS SIGNING_KEYSTORE_B64 SECRET ==="
+            base64 signing/signing-key.jks
+            echo "=================================================="
+          fi
+
+      # ── 8. local.properties ───────────────────────────────────────────────
+      - name: Create local.properties
+        run: |
+          printf 'signing.storeFile=signing/signing-key.jks\nsigning.storePassword=123456\nsigning.keyAlias=RyzixChess\nsigning.keyPassword=123456\n' \
+            > local.properties
+
+      # ── 9. chmod gradlew ─────────────────────────────────────────────────
+      - name: chmod gradlew
+        run: chmod +x ./gradlew
+
+      # ── 10. Assemble Release APK ──────────────────────────────────────────
+      - name: Assemble Release APK
+        run: |
+          set -o pipefail
+          ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      # ── 11. Get version ───────────────────────────────────────────────────
+      - name: Get version info
+        id: version
+        run: |
+          VER=$(grep 'versionName' app/build.gradle.kts | grep -oP '"[^"]+"' | tr -d '"' | head -1)
+          BUILD=${{ github.run_number }}
+          echo "name=$VER" >> $GITHUB_OUTPUT
+          echo "apk_name=RyzixChess-v${VER}-b${BUILD}.apk" >> $GITHUB_OUTPUT
+
+      # ── 12. Rename APK ────────────────────────────────────────────────────
+      - name: Rename APK
+        run: |
+          APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          cp "$APK" "app/build/outputs/apk/release/${{ steps.version.outputs.apk_name }}"
+
+      # ── 13. Upload artifact ───────────────────────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.apk_name }}
+          path: app/build/outputs/apk/release/RyzixChess-*.apk
+          retention-days: 30
+
+      # ── 14. GitHub Release ────────────────────────────────────────────────
+      - name: Create GitHub Release
+        if: >
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+          (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/'))
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.name }}-build.${{ github.run_number }}
+          name: "Ryzix Chess v${{ steps.version.outputs.name }} (Build #${{ github.run_number }})"
+          body: |
+            **Ryzix Chess v${{ steps.version.outputs.name }} — Automated Release**
+
+            Branch: `${{ github.ref_name }}` | Commit: `${{ github.sha }}`
+            Package: `com.ryzix.chess`
+            Engine: **Ryzix Engine** (~200 ELO, ARM64 native)
+
+            **Features:**
+            - Play vs Ryzix Engine (~200 ELO — ideal for beginners)
+            - OTB (Over The Board) — two players, one device
+            - Full chess rules: castling, en-passant, pawn promotion
+            - Game history with PGN export
+            - Dark premium UI, time controls (1/3/5/10 min)
+            - Engine level selector (adjusts think time)
+            - King flashes red on check, solid red on checkmate
+
+            **Install:** Download APK → enable "Install from unknown sources" → install.
+          draft: false
+          prerelease: true
+          files: app/build/outputs/apk/release/RyzixChess-*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 15. Telegram — SUCCESS ────────────────────────────────────────────
+      - name: Telegram — Success
+        if: success()
+        run: |
+          RELEASE_URL="https://github.com/RD7890/RyzixChess-Android/releases"
+          ARTIFACT_URL="https://github.com/RD7890/RyzixChess-Android/actions/runs/${{ github.run_id }}"
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '✅ *Ryzix Chess v%s Build #%s — SUCCESS*\n\n📦 APK: `%s`\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n⚙️ Engine: Ryzix (~200 ELO, ARM64)\n\n🔗 *Download APK:*\n[GitHub Release](%s)\n[Build Artifacts](%s)' \
+              '${{ steps.version.outputs.name }}' '${{ github.run_number }}' \
+              '${{ steps.version.outputs.apk_name }}' \
+              '${{ github.ref_name }}' "$SHORT_SHA" \
+              "$RELEASE_URL" "$ARTIFACT_URL")"
+          tail -200 build.log > build_summary.log
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F chat_id="${TG_CHAT_ID}" \
+            -F document=@build_summary.log \
+            -F caption="📋 Ryzix Chess Build #${{ github.run_number }} — last 200 lines"
+
+      # ── 16. Telegram — FAILURE ────────────────────────────────────────────
+      - name: Telegram — Failure
+        if: failure()
+        run: |
+          ACTIONS_URL="https://github.com/RD7890/RyzixChess-Android/actions/runs/${{ github.run_id }}"
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            -d chat_id="${TG_CHAT_ID}" \
+            -d parse_mode="Markdown" \
+            -d text="$(printf '❌ *Ryzix Chess Build #%s — FAILED*\n\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n\n🔍 [View logs](%s)\n\nLog attached 👇' \
+              '${{ github.run_number }}' '${{ github.ref_name }}' "$SHORT_SHA" "$ACTIONS_URL")"
+          if [ -f build.log ]; then tail -200 build.log > fail_log.txt
+          else echo "Build failed before Gradle step" > fail_log.txt; fi
+          curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendDocument" \
+            -F chat_id="${TG_CHAT_ID}" \
+            -F document=@fail_log.txt \
+            -F caption="💥 Ryzix Chess failure log — Build #${{ github.run_number }}"
