@@ -90,6 +90,17 @@ class RyzixEngine(
     var isReady = false
         private set
 
+    // Completed when the first "readyok" arrives after init — lets callers
+    // await the engine being truly ready instead of guessing with a fixed delay.
+    private val _readySignal = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** Suspends until the engine sends its first "readyok" or [timeoutMs] elapses. */
+    suspend fun waitForReady(timeoutMs: Long = 8000): Boolean {
+        return try {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { _readySignal.await() } != null
+        } catch (_: Exception) { false }
+    }
+
     @Volatile private var pendingFen: String? = null
     @Volatile private var pendingSettings: EngineSettings? = null
     @Volatile private var isAnalysisPending = false
@@ -142,6 +153,8 @@ class RyzixEngine(
                     when {
                         line == "readyok" -> {
                             isReady = true
+                            // Signal waitForReady() callers on the very first readyok.
+                            if (!_readySignal.isCompleted) _readySignal.complete(Unit)
                             if (isAnalysisPending) {
                                 isAnalysisPending = false
                                 val fen = pendingFen
@@ -259,7 +272,7 @@ class RyzixEngine(
         lastEmittedDepth = -1
         isAnalysisPending = false
         isSearchPending = false
-        stoppingForRestart = false
+        stoppingForRestart = true
         pendingFen = null
         pendingSettings = null
         pendingSearchFen = null

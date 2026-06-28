@@ -149,20 +149,37 @@ jobs:
           if [ -n "$ASSET_URL" ]; then
             echo "Downloading Stockfish from: $ASSET_URL"
             curl -fsSL "$ASSET_URL" -L -o /tmp/sf_download
+            echo "Downloaded $(wc -c < /tmp/sf_download) bytes — type: $(file /tmp/sf_download | cut -d: -f2)"
 
-            # Check if it's a zip
-            if file /tmp/sf_download | grep -qi zip; then
+            # Extract based on archive type.
+            # SF 16 ships stockfish-android-armv8.TAR (not zip) — must handle tar.
+            if file /tmp/sf_download | grep -qi "zip"; then
               echo "Extracting zip..."
+              mkdir -p /tmp/sf_extracted
               cd /tmp && unzip -o sf_download -d sf_extracted
-              SF_BIN=$(find /tmp/sf_extracted -type f \( -name "stockfish*" -o -name "sf*" \) ! -name "*.zip" | head -1)
+            elif file /tmp/sf_download | grep -qiE "tar|POSIX|archive"; then
+              echo "Extracting tar..."
+              mkdir -p /tmp/sf_extracted
+              tar -xf /tmp/sf_download -C /tmp/sf_extracted
             else
-              SF_BIN=/tmp/sf_download
+              echo "Raw binary (no archive wrapper)"
+              mkdir -p /tmp/sf_extracted
+              cp /tmp/sf_download /tmp/sf_extracted/stockfish
             fi
+
+            # Find the actual ELF binary inside the extracted folder
+            SF_BIN=$(find /tmp/sf_extracted -type f | xargs -I{} sh -c 'file "{}" | grep -qi ELF && echo "{}"' | head -1)
+            if [ -z "$SF_BIN" ]; then
+              # Fallback: take whatever non-archive file we find
+              SF_BIN=$(find /tmp/sf_extracted -type f ! -name "*.tar" ! -name "*.zip" ! -name "*.gz" | head -1)
+            fi
+            echo "Using binary: $SF_BIN"
 
             if [ -n "$SF_BIN" ] && [ -f "$SF_BIN" ]; then
               cp "$SF_BIN" app/src/main/jniLibs/arm64-v8a/libstockfish.so
               chmod +x app/src/main/jniLibs/arm64-v8a/libstockfish.so || true
               echo "Stockfish ready: $(wc -c < app/src/main/jniLibs/arm64-v8a/libstockfish.so) bytes"
+              file app/src/main/jniLibs/arm64-v8a/libstockfish.so || true
             else
               echo "FATAL: could not locate Stockfish binary in download"; exit 1
             fi

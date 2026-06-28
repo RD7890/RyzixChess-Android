@@ -256,12 +256,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     // ryzixAiEngine → libryzix.so at 1000 ELO
 
     private fun collectAiVsAiOutput() {
-        // Stockfish 16 engine — handles moves when it's SF's turn
+        // Stockfish 16 engine — handles moves when it's SF's turn.
+        // NOTE: We do NOT re-check isSfTurn here. SF is only ever asked to search on
+        // its own turn (via scheduleNextAiMove routing), so any bestmove it emits is
+        // valid. Re-checking the turn after the async search completes can race and
+        // silently discard the move, leaving the game in a permanent "Thinking..." hang.
         viewModelScope.launch {
             sfAiEngine.bestMoveFlow.collect { bestMove ->
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
-                val isSfTurn = (gameState.value.isWhiteTurn == _aiVsAiState.value.sfPlaysWhite)
-                if (!isSfTurn || gameState.value.isGameOver) return@collect
+                if (gameState.value.isGameOver) return@collect
                 val isWhite = gameState.value.isWhiteTurn
                 _aiVsAiState.value = _aiVsAiState.value.copy(
                     whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
@@ -270,12 +273,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 handleAiVsAiMove(bestMove)
             }
         }
-        // Ryzix 1000 ELO engine — handles moves when it's Ryzix's turn
+        // Ryzix 1000 ELO engine — handles moves when it's Ryzix's turn.
+        // Same reasoning as above — no isSfTurn re-check.
         viewModelScope.launch {
             ryzixAiEngine.bestMoveFlow.collect { bestMove ->
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
-                val isRyzixTurn = (gameState.value.isWhiteTurn != _aiVsAiState.value.sfPlaysWhite)
-                if (!isRyzixTurn || gameState.value.isGameOver) return@collect
+                if (gameState.value.isGameOver) return@collect
                 val isWhite = gameState.value.isWhiteTurn
                 _aiVsAiState.value = _aiVsAiState.value.copy(
                     whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
@@ -325,10 +328,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            // Re-evaluate after delay — captures any state change during the wait.
+            val currentIsWhiteTurn = gameState.value.isWhiteTurn
+            val currentIsSfTurn    = (currentIsWhiteTurn == _aiVsAiState.value.sfPlaysWhite)
+
             val fen      = chessGame.getCurrentFen()
-            val settings = if (isSfTurn) SF_BATTLE_SETTINGS else RYZIX_1000_SETTINGS
+            val settings = if (currentIsSfTurn) SF_BATTLE_SETTINGS else RYZIX_1000_SETTINGS
             // Route to the correct binary
-            val aiEngine = if (isSfTurn) sfAiEngine else ryzixAiEngine
+            val aiEngine = if (currentIsSfTurn) sfAiEngine else ryzixAiEngine
             aiEngine.applySettings(settings)
             aiEngine.startSearch(fen, settings)
         }
@@ -370,11 +377,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            // Lazily init each engine — each spawns its own libryzix.so / libstockfish.so process
-            if (!sfAiReady)    { sfAiReady    = sfAiEngine.init();    delay(400) }
-            if (!ryzixAiReady) { ryzixAiReady = ryzixAiEngine.init(); delay(400) }
+            // Lazily init each engine — each spawns its own libryzix.so / libstockfish.so process.
+            // waitForReady() suspends until the engine's first "readyok" (up to 8 s) so we never
+            // race against NNUE load time on slower devices. Fixed delays were too short for SF16.
+            if (!sfAiReady) {
+                sfAiReady = sfAiEngine.init()
+                if (sfAiReady) sfAiReady = sfAiEngine.waitForReady(8000)
+            }
+            if (!ryzixAiReady) {
+                ryzixAiReady = ryzixAiEngine.init()
+                if (ryzixAiReady) ryzixAiReady = ryzixAiEngine.waitForReady(5000)
+            }
             if (!sfAiReady || !ryzixAiReady) return@launch
-            delay(600)
             scheduleNextAiMove()
         }
     }
