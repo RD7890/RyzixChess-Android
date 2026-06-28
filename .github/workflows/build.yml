@@ -235,22 +235,38 @@ jobs:
       - name: chmod gradlew
         run: chmod +x ./gradlew
 
-      # ── 11. Assemble Release APK ──────────────────────────────────────────
+      # ── 11. Auto version bump ─────────────────────────────────────────────
+      # versionCode  = github.run_number  (always incrementing, unique per build)
+      # versionName  = 1.0.<run_number>   (e.g. 1.0.42 for build #42)
+      # Changes are local to the CI workspace — nothing is committed back.
+      - name: Bump version
+        run: |
+          BUILD=${{ github.run_number }}
+          VER_NAME="1.0.${BUILD}"
+          sed -i "s/versionCode = [0-9]*/versionCode = ${BUILD}/" app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${VER_NAME}\"/" app/build.gradle.kts
+          echo "versionCode  → ${BUILD}"
+          echo "versionName  → ${VER_NAME}"
+          grep -E 'versionCode|versionName' app/build.gradle.kts
+
+      # ── 12. Assemble Release APK ──────────────────────────────────────────
       - name: Assemble Release APK
         run: |
           set -o pipefail
           ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
 
-      # ── 12. Get version ───────────────────────────────────────────────────
+      # ── 13. Get version info ──────────────────────────────────────────────
+      # versionName was already bumped to "1.0.<run>" by the Bump version step,
+      # so VER reads as "1.0.42" for build 42 — no extra suffix needed.
       - name: Get version info
         id: version
         run: |
           VER=$(grep 'versionName' app/build.gradle.kts | grep -oP '"[^"]+"' | tr -d '"' | head -1)
-          BUILD=${{ github.run_number }}
           echo "name=$VER" >> $GITHUB_OUTPUT
-          echo "apk_name=RyzixChess-v${VER}-b${BUILD}.apk" >> $GITHUB_OUTPUT
+          echo "apk_name=RyzixChess-v${VER}.apk" >> $GITHUB_OUTPUT
+          echo "Version: $VER  →  RyzixChess-v${VER}.apk"
 
-      # ── 13. Rename APK ────────────────────────────────────────────────────
+      # ── 14. Rename APK ────────────────────────────────────────────────────
       - name: Rename APK
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
