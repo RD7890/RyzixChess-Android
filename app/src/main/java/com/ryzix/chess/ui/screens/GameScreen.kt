@@ -9,12 +9,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.AddCircleOutline
-import androidx.compose.material.icons.rounded.Analytics
-import androidx.compose.material.icons.rounded.Fullscreen
-import androidx.compose.material.icons.rounded.FullscreenExit
-import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,7 +24,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ryzix.chess.ui.screens.components.ChessBoard
 import com.ryzix.chess.ui.screens.components.GameBottomBar
 import com.ryzix.chess.ui.screens.components.StockfishPanel
-import com.ryzix.chess.viewmodel.GameViewModel
+import com.ryzix.chess.viewmodel.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,13 +45,17 @@ fun GameScreen(
     val promotionPending by vm.promotionPending.collectAsState()
     val isReviewMode     by vm.isReviewMode.collectAsState()
     val isOtbMode        by vm.isOtbMode.collectAsState()
+    val gameMode         by vm.gameMode.collectAsState()
+    val aiState          by vm.aiVsAiState.collectAsState()
+    val otbModel         by vm.otbAnalysisModel.collectAsState()
 
-    var showMoveList      by remember { mutableStateOf(false) }
-    var showSettingsSheet by remember { mutableStateOf(false) }
-    var showNewGameDialog by remember { mutableStateOf(false) }
+    var showMoveList       by remember { mutableStateOf(false) }
+    var showSettingsSheet  by remember { mutableStateOf(false) }
+    var showNewGameDialog  by remember { mutableStateOf(false) }
     var showGameOverDialog by remember { mutableStateOf(true) }
     LaunchedEffect(state.isGameOver) { if (state.isGameOver) showGameOverDialog = true }
 
+    val isAiVsAi    = gameMode == GameMode.AI_VS_AI
     val bottomIsWhite = !state.isFlipped
 
     Column(
@@ -65,17 +64,17 @@ fun GameScreen(
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        // ── Top action bar ─────────────────────────────────────────────────────
+        // ── Top bar ──────────────────────────────────────────────────────────
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Mode label
             Surface(
                 shape = RoundedCornerShape(6.dp),
                 color = when {
+                    isAiVsAi     -> Color(0xFF0A1A2E)
                     isReviewMode -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
                     !isOtbMode   -> Color(0xFF1E0A0B)
                     else         -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
@@ -83,53 +82,69 @@ fun GameScreen(
             ) {
                 Text(
                     text = when {
+                        isAiVsAi     -> "Engine Battle"
                         isReviewMode -> "Review"
                         !isOtbMode   -> "vs Ryzix"
                         else         -> "Over the Board"
                     },
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = when {
+                        isAiVsAi     -> Color(0xFF4FC3F7)
                         isReviewMode -> MaterialTheme.colorScheme.tertiary
-                        !isOtbMode   -> MaterialTheme.colorScheme.primary
                         else         -> MaterialTheme.colorScheme.primary
                     },
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
             Spacer(modifier = Modifier.weight(1f))
-            IconButton(onClick = onToggleFullscreen) {
-                Icon(
-                    imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
-                    contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
+            if (!isAiVsAi) {
+                IconButton(onClick = onToggleFullscreen) {
+                    Icon(
+                        imageVector = if (isFullscreen) Icons.Rounded.FullscreenExit else Icons.Rounded.Fullscreen,
+                        contentDescription = "Fullscreen",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                }
             }
             IconButton(onClick = { showNewGameDialog = true }) {
                 Icon(Icons.Rounded.AddCircleOutline, contentDescription = "New game",
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             }
-            if (isOtbMode) {
-                IconButton(onClick = { showSettingsSheet = true }) {
-                    Icon(Icons.Rounded.Settings, contentDescription = "Engine settings",
-                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            if (isOtbMode || isAiVsAi) {
+                IconButton(onClick = { if (!isAiVsAi) showSettingsSheet = true }) {
+                    Icon(
+                        if (isAiVsAi) Icons.Rounded.Speed else Icons.Rounded.Settings,
+                        contentDescription = "Settings",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = if (isAiVsAi) 0.3f else 0.7f),
+                    )
                 }
             }
         }
 
-        // ── Opponent player bar (top) ───────────────────────────────────────────
-        PlayerBar(
-            name           = if (!isOtbMode) { if (!bottomIsWhite) "You" else "Ryzix" } else { if (!bottomIsWhite) "White" else "Black" },
-            isWhite        = !bottomIsWhite,
-            isActive       = if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
-            isGameOver     = state.isGameOver,
-            isThinking     = isThinking && ((if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn)),
-            isEngine       = !isOtbMode && bottomIsWhite,
-            modifier       = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-        )
+        // ── Top player bar ───────────────────────────────────────────────────
+        if (isAiVsAi) {
+            AiPlayerBar(
+                label      = if (!bottomIsWhite) aiState.whiteLabel else aiState.blackLabel,
+                isWhite    = !bottomIsWhite,
+                isThinking = if (!bottomIsWhite) aiState.whiteThinking else aiState.blackThinking,
+                isActive   = if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
+                isGameOver = state.isGameOver,
+                modifier   = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        } else {
+            PlayerBar(
+                name       = if (!isOtbMode) { if (!bottomIsWhite) "You" else "Ryzix" }
+                             else { if (!bottomIsWhite) "White" else "Black" },
+                isWhite    = !bottomIsWhite,
+                isActive   = if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
+                isGameOver = state.isGameOver,
+                isThinking = isThinking && (if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn),
+                isEngine   = !isOtbMode && bottomIsWhite,
+                modifier   = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
 
-        // ── Chess board ────────────────────────────────────────────────────────
+        // ── Chess board ──────────────────────────────────────────────────────
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
@@ -139,56 +154,81 @@ fun GameScreen(
             ChessBoard(
                 modifier        = Modifier.fillMaxSize(),
                 state           = state,
-                lastMoveGrade   = if (isOtbMode) moveGrade else null,
+                lastMoveGrade   = if (isOtbMode && !isAiVsAi) moveGrade else null,
                 onSquareTap     = { sq -> vm.onSquareTap(sq) },
                 showCoordinates = true,
             )
         }
 
-        // ── Your player bar (bottom) ───────────────────────────────────────────
-        PlayerBar(
-            name           = if (!isOtbMode) { if (bottomIsWhite) "You" else "Ryzix" } else { if (bottomIsWhite) "White" else "Black" },
-            isWhite        = bottomIsWhite,
-            isActive       = if (bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
-            isGameOver     = state.isGameOver,
-            isThinking     = false,
-            isEngine       = !isOtbMode && !bottomIsWhite,
-            modifier       = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 4.dp),
-        )
+        // ── Bottom player bar ─────────────────────────────────────────────────
+        if (isAiVsAi) {
+            AiPlayerBar(
+                label      = if (bottomIsWhite) aiState.whiteLabel else aiState.blackLabel,
+                isWhite    = bottomIsWhite,
+                isThinking = if (bottomIsWhite) aiState.whiteThinking else aiState.blackThinking,
+                isActive   = if (bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
+                isGameOver = state.isGameOver,
+                modifier   = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        } else {
+            PlayerBar(
+                name       = if (!isOtbMode) { if (bottomIsWhite) "You" else "Ryzix" }
+                             else { if (bottomIsWhite) "White" else "Black" },
+                isWhite    = bottomIsWhite,
+                isActive   = if (bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
+                isGameOver = state.isGameOver,
+                isThinking = false,
+                isEngine   = !isOtbMode && !bottomIsWhite,
+                modifier   = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
 
-        // ── In-game control bar ────────────────────────────────────────────────
-        GameBottomBar(
-            onMenu           = { showMoveList = !showMoveList },
-            onEngineStrength = { if (isOtbMode) showSettingsSheet = true },
-            onBack           = { vm.navigateBack() },
-            onForward        = { vm.navigateForward() },
-            onUndo           = { vm.undoOtbMove() },
-            onExportPgn      = { vm.sharePgn(vm.getCurrentGamePgn()) },
-            canBack          = state.canGoBack,
-            canForward       = state.canGoForward,
-            isReviewMode     = isReviewMode,
-        )
-
-        // ── Ryzix analysis strip + optional move list ──────────────────────────
-        StockfishPanel(
-            eval            = eval,
-            isThinking      = isThinking,
-            engineEnabled   = engineEnabled,
-            engineAvailable = engineAvailable,
-            analysisLines   = analysisLines,
-            moves           = state.moves,
-            showMoveList    = showMoveList,
-            moveGrade       = moveGrade,
-            onToggleEngine  = { vm.toggleEngine() },
-            modifier        = Modifier.fillMaxWidth(),
-            isOtbMode       = isOtbMode,
-        )
+        // ── AI vs AI controls / Engine panel ─────────────────────────────────
+        if (isAiVsAi) {
+            AiBattleControls(
+                state      = aiState,
+                gameOver   = state.isGameOver,
+                moveCount  = state.moves.size,
+                onPause    = { vm.stopAiVsAi() },
+                onResume   = { vm.resumeAiVsAi() },
+                canBack    = state.canGoBack,
+                canForward = state.canGoForward,
+                onBack     = { vm.navigateBack() },
+                onForward  = { vm.navigateForward() },
+                onExport   = { vm.sharePgn(vm.getCurrentGamePgn()) },
+                modifier   = Modifier.fillMaxWidth(),
+            )
+        } else {
+            GameBottomBar(
+                onMenu           = { showMoveList = !showMoveList },
+                onEngineStrength = { if (isOtbMode) showSettingsSheet = true },
+                onBack           = { vm.navigateBack() },
+                onForward        = { vm.navigateForward() },
+                onUndo           = { vm.undoOtbMove() },
+                onExportPgn      = { vm.sharePgn(vm.getCurrentGamePgn()) },
+                canBack          = state.canGoBack,
+                canForward       = state.canGoForward,
+                isReviewMode     = isReviewMode,
+            )
+            StockfishPanel(
+                eval            = eval,
+                isThinking      = isThinking,
+                engineEnabled   = engineEnabled,
+                engineAvailable = engineAvailable,
+                analysisLines   = analysisLines,
+                moves           = state.moves,
+                showMoveList    = showMoveList,
+                moveGrade       = moveGrade,
+                onToggleEngine  = { vm.toggleEngine() },
+                modifier        = Modifier.fillMaxWidth(),
+                isOtbMode       = isOtbMode,
+                analysisModelName = otbModel.displayName,
+            )
+        }
         Spacer(modifier = Modifier.height(8.dp))
     }
 
-    // ── Pawn promotion picker ──────────────────────────────────────────────────
+    // ── Promotion dialog ──────────────────────────────────────────────────────
     if (promotionPending != null) {
         PromotionDialog(
             isWhite   = state.isWhiteTurn,
@@ -197,19 +237,19 @@ fun GameScreen(
         )
     }
 
-    // ── Game-over overlay ──────────────────────────────────────────────────────
+    // ── Game over dialog ──────────────────────────────────────────────────────
     if (state.isGameOver && state.gameResult != null && showGameOverDialog) {
         GameOverDialog(
             result    = state.gameResult!!,
             pgn       = vm.getCurrentGamePgn(),
-            onExport  = { pgn -> vm.sharePgn(pgn) },
+            onExport  = { vm.sharePgn(it) },
             onNewGame = { showNewGameDialog = true },
             onAnalyse = { showGameOverDialog = false },
             onClose   = onBack,
         )
     }
 
-    // ── New game dialog ────────────────────────────────────────────────────────
+    // ── New game dialog ───────────────────────────────────────────────────────
     if (showNewGameDialog) {
         NewGameDialog(
             onStartOtb = { whiteAtBottom ->
@@ -220,19 +260,25 @@ fun GameScreen(
                 showNewGameDialog = false
                 vm.newGame(otbMode = false, playerIsWhite = playerIsWhite)
             },
+            onStartAiVsAi = { sfPlaysWhite ->
+                showNewGameDialog = false
+                vm.startAiVsAi(sfPlaysWhite)
+            },
             onDismiss = { showNewGameDialog = false },
         )
     }
 
-    // ── Engine settings sheet (OTB only) ──────────────────────────────────────
+    // ── OTB engine settings sheet ─────────────────────────────────────────────
     if (showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor   = MaterialTheme.colorScheme.surface,
         ) {
             InlineEngineSettings(
                 prefs              = prefs,
                 engineAvailable    = engineAvailable,
+                otbAnalysisModel   = otbModel,
+                onModelChange      = { vm.setOtbAnalysisModel(it) },
                 onLevelChange      = { vm.saveLevel(it) },
                 onSearchTimeChange = { vm.saveSearchTime(it) },
                 onMultiPvChange    = { vm.saveMultiPv(it) },
@@ -243,7 +289,158 @@ fun GameScreen(
     }
 }
 
-// ── Player bar composable ──────────────────────────────────────────────────────
+// ── AI battle controls bar ────────────────────────────────────────────────────
+
+@Composable
+private fun AiBattleControls(
+    state: AiVsAiState,
+    gameOver: Boolean,
+    moveCount: Int,
+    onPause: () -> Unit,
+    onResume: () -> Unit,
+    canBack: Boolean,
+    canForward: Boolean,
+    onBack: () -> Unit,
+    onForward: () -> Unit,
+    onExport: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            // Move counter + pause/resume
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Move ${moveCount / 2 + 1}  •  ${if (moveCount % 2 == 0) "White" else "Black"} to play",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                )
+                if (!gameOver) {
+                    if (state.isActive) {
+                        OutlinedButton(
+                            onClick = onPause,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        ) {
+                            Icon(Icons.Rounded.Pause, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Pause", style = MaterialTheme.typography.labelSmall)
+                        }
+                    } else {
+                        Button(
+                            onClick = onResume,
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+                        ) {
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text("Resume", style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
+            // Review controls (always visible after game over; also during)
+            if (gameOver) {
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = onBack,    enabled = canBack,    modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Rounded.ChevronLeft,  null, modifier = Modifier.size(18.dp))
+                        Text("Back", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(onClick = onForward, enabled = canForward, modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Rounded.ChevronRight, null, modifier = Modifier.size(18.dp))
+                        Text("Forward", style = MaterialTheme.typography.labelSmall)
+                    }
+                    OutlinedButton(onClick = onExport,                        modifier = Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
+                        Icon(Icons.Rounded.Share,         null, modifier = Modifier.size(18.dp))
+                        Text("PGN", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── AI player bar (for Engine Battle) ────────────────────────────────────────
+
+@Composable
+private fun AiPlayerBar(
+    label: String,
+    isWhite: Boolean,
+    isThinking: Boolean,
+    isActive: Boolean,
+    isGameOver: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val isSf     = label.startsWith("Stockfish")
+    val avatarBg = if (isSf) Color(0xFF0A1A2E) else Color(0xFF1E0A0B)
+    val avatarFg = if (isSf) Color(0xFF4FC3F7) else MaterialTheme.colorScheme.primary
+
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .background(
+                if (isActive && !isGameOver) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.surface
+            )
+            .border(
+                width = if (isActive && !isGameOver) 1.5.dp else 0.5.dp,
+                color = if (isActive && !isGameOver) avatarFg.copy(alpha = 0.5f)
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(10.dp),
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            modifier = Modifier.size(36.dp).clip(CircleShape).background(avatarBg),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(if (isSf) "SF" else "R", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = avatarFg)
+        }
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                text = when {
+                    isGameOver   -> "Game over"
+                    isThinking   -> "Thinking…"
+                    isActive     -> "My turn"
+                    else         -> "Waiting…"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = when {
+                    isGameOver -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                    isThinking -> avatarFg
+                    isActive   -> avatarFg
+                    else       -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                },
+            )
+        }
+        if (isThinking) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(16.dp),
+                strokeWidth = 2.dp,
+                color = avatarFg.copy(alpha = 0.8f),
+            )
+        }
+        // Color dot (white/black square indicator)
+        Box(
+            modifier = Modifier
+                .size(12.dp)
+                .clip(CircleShape)
+                .background(if (isWhite) Color(0xFFF0D9B5) else Color(0xFF2C2C2C))
+                .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.4f), CircleShape),
+        )
+    }
+}
+
+// ── Human player bar ──────────────────────────────────────────────────────────
 
 @Composable
 private fun PlayerBar(
@@ -264,17 +461,13 @@ private fun PlayerBar(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(
-                if (isActive && !isGameOver)
-                    MaterialTheme.colorScheme.surfaceVariant
-                else
-                    MaterialTheme.colorScheme.surface
+                if (isActive && !isGameOver) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.surface
             )
             .border(
                 width = if (isActive && !isGameOver) 1.5.dp else 0.5.dp,
-                color = if (isActive && !isGameOver)
-                    activeColor.copy(alpha = 0.6f)
-                else
-                    MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
+                color = if (isActive && !isGameOver) activeColor.copy(alpha = 0.6f)
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(10.dp),
             )
             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -282,30 +475,21 @@ private fun PlayerBar(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
+            modifier = Modifier.size(36.dp).clip(CircleShape)
                 .background(if (isEngine) Color(0xFF1A1A1A) else avatarBg),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                text = pieceSymbol,
-                fontSize = 18.sp,
-                color = if (isEngine) MaterialTheme.colorScheme.primary else avatarFg,
-            )
+            Text(pieceSymbol, fontSize = 18.sp,
+                color = if (isEngine) MaterialTheme.colorScheme.primary else avatarFg)
         }
-
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+            Text(name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface)
             Text(
                 text = when {
-                    isGameOver     -> "Game over"
-                    isActive       -> if (isEngine) "Thinking…" else "Your turn"
-                    else           -> "Waiting…"
+                    isGameOver -> "Game over"
+                    isActive   -> if (isEngine) "Thinking…" else "Your turn"
+                    else       -> "Waiting…"
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = when {
@@ -315,69 +499,39 @@ private fun PlayerBar(
                 },
             )
         }
-
         if (isThinking) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(16.dp),
-                strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-            )
+            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f))
         }
-
         if (isActive && !isGameOver) {
-            Box(
-                modifier = Modifier
-                    .size(8.dp)
-                    .clip(CircleShape)
-                    .background(activeColor),
-            )
+            Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(activeColor))
         }
     }
 }
 
-// ── Promotion picker dialog ────────────────────────────────────────────────────
+// ── Promotion dialog ──────────────────────────────────────────────────────────
 
 @Composable
-private fun PromotionDialog(
-    isWhite: Boolean,
-    onPick: (Char) -> Unit,
-    onDismiss: () -> Unit,
-) {
+private fun PromotionDialog(isWhite: Boolean, onPick: (Char) -> Unit, onDismiss: () -> Unit) {
     val pieces = listOf('q' to "Queen", 'r' to "Rook", 'b' to "Bishop", 'n' to "Knight")
-
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Promote pawn", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Choose a piece for ${if (isWhite) "White" else "Black"}:",
+                Text("Choose a piece for ${if (isWhite) "White" else "Black"}:",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                 Spacer(Modifier.height(4.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     pieces.forEach { (char, name) ->
-                        OutlinedButton(
-                            onClick = { onPick(char) },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(10.dp),
-                            contentPadding = PaddingValues(vertical = 12.dp, horizontal = 4.dp),
-                        ) {
+                        OutlinedButton(onClick = { onPick(char) }, modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(10.dp), contentPadding = PaddingValues(vertical = 12.dp, horizontal = 4.dp)) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    text = when (char) { 'q' -> "♛"; 'r' -> "♜"; 'b' -> "♝"; else -> "♞" },
-                                    fontSize = 22.sp,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                )
-                                Text(
-                                    text = name,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f),
-                                )
+                                Text(when (char) { 'q' -> "♛"; 'r' -> "♜"; 'b' -> "♝"; else -> "♞" },
+                                    fontSize = 22.sp, color = MaterialTheme.colorScheme.onSurface)
+                                Text(name, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.65f))
                             }
                         }
                     }
@@ -389,159 +543,147 @@ private fun PromotionDialog(
     )
 }
 
-// ── Game-over dialog ───────────────────────────────────────────────────────────
+// ── Game over dialog ──────────────────────────────────────────────────────────
 
 @Composable
 private fun GameOverDialog(
-    result: String,
-    pgn: String,
-    onExport: (String) -> Unit,
-    onNewGame: () -> Unit,
-    onAnalyse: () -> Unit,
-    onClose: () -> Unit,
+    result: String, pgn: String,
+    onExport: (String) -> Unit, onNewGame: () -> Unit, onAnalyse: () -> Unit, onClose: () -> Unit,
 ) {
     val (title, subtitle) = when (result) {
         "1-0"     -> "White Wins!" to "Checkmate — well played!"
         "0-1"     -> "Black Wins!" to "Checkmate — well played!"
-        "1/2-1/2" -> "Draw!" to "The game ended in a draw."
-        else      -> "Game Over" to result
+        "1/2-1/2" -> "Draw!"       to "The game ended in a draw."
+        else      -> "Game Over"   to result
     }
-
     AlertDialog(
         onDismissRequest = onAnalyse,
         title = { Text(title, fontWeight = FontWeight.Bold) },
         text  = { Text(subtitle) },
         confirmButton = {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Button(onClick = onNewGame, modifier = Modifier.fillMaxWidth()) {
-                    Text("New Game")
+                Button(onClick = onNewGame, modifier = Modifier.fillMaxWidth()) { Text("New Game") }
+                OutlinedButton(onClick = onAnalyse, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Analytics, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Analyse")
                 }
-                OutlinedButton(
-                    onClick = onAnalyse,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Rounded.Analytics, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Analyse Manually")
-                }
-                OutlinedButton(
-                    onClick = { onExport(pgn) },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Icon(Icons.Rounded.Share, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(Modifier.width(6.dp))
-                    Text("Export PGN")
+                OutlinedButton(onClick = { onExport(pgn) }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Rounded.Share, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Export PGN")
                 }
             }
         },
-        dismissButton = {
-            TextButton(onClick = onClose) { Text("Close") }
-        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
     )
 }
 
-// ── New game dialog ────────────────────────────────────────────────────────────
+// ── New game dialog ───────────────────────────────────────────────────────────
 
 @Composable
 private fun NewGameDialog(
-    onStartOtb: (whiteAtBottom: Boolean) -> Unit,
-    onStartVsEngine: (playerIsWhite: Boolean) -> Unit,
+    onStartOtb: (Boolean) -> Unit,
+    onStartVsEngine: (Boolean) -> Unit,
+    onStartAiVsAi: (sfPlaysWhite: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var selectedTab by remember { mutableStateOf(0) } // 0 = vs Ryzix, 1 = OTB
+    var selectedTab by remember { mutableStateOf(0) }   // 0=vsRyzix 1=OTB 2=AiBattle
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Game", fontWeight = FontWeight.Bold) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                // Mode tabs
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    listOf("vs Ryzix", "Over the Board").forEachIndexed { idx, label ->
+                // 3-tab row
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("vs Ryzix", "OTB", "⚔ Battle").forEachIndexed { idx, label ->
                         Surface(
                             shape = RoundedCornerShape(8.dp),
-                            color = if (selectedTab == idx) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.surfaceVariant,
+                            color = if (selectedTab == idx) {
+                                if (idx == 2) Color(0xFF0A1A2E) else MaterialTheme.colorScheme.primary
+                            } else MaterialTheme.colorScheme.surfaceVariant,
                             modifier = Modifier.weight(1f).clickable { selectedTab = idx },
                         ) {
                             Text(
                                 text = label,
-                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                                color = if (selectedTab == idx) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                color = if (selectedTab == idx) {
+                                    if (idx == 2) Color(0xFF4FC3F7) else MaterialTheme.colorScheme.onPrimary
+                                } else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                                 textAlign = TextAlign.Center,
-                                modifier = Modifier.padding(vertical = 10.dp),
+                                modifier = Modifier.padding(vertical = 9.dp),
                             )
                         }
                     }
                 }
 
-                if (selectedTab == 0) {
-                    Text(
-                        text = "Play against Ryzix Engine. No hints or arrows — test your skills.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Text(
-                        text = "Your color:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        ColorPickerTile(
-                            symbol = "♔", label = "White",
-                            bg = Color(0xFFF0D9B5), fg = Color(0xFF1A1A1A),
-                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine(true) },
-                        )
-                        ColorPickerTile(
-                            symbol = "?", label = "Random",
-                            bg = MaterialTheme.colorScheme.surfaceVariant,
-                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine((0..1).random() == 0) },
-                        )
-                        ColorPickerTile(
-                            symbol = "♚", label = "Black",
-                            bg = Color(0xFF2C2C2C), fg = Color(0xFFF0D9B5),
-                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine(false) },
-                        )
+                when (selectedTab) {
+                    0 -> {
+                        Text("Play against Ryzix Engine — no hints or arrows shown.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                        Text("Your color:", style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ColorPickerTile("♔","White", Color(0xFFF0D9B5), Color(0xFF1A1A1A), Modifier.weight(1f)) { onStartVsEngine(true) }
+                            ColorPickerTile("?","Random", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onStartVsEngine((0..1).random() == 0) }
+                            ColorPickerTile("♚","Black", Color(0xFF2C2C2C), Color(0xFFF0D9B5), Modifier.weight(1f)) { onStartVsEngine(false) }
+                        }
                     }
-                } else {
-                    Text(
-                        text = "Two players, one device. Ryzix Engine shows hints and arrows.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-                    )
-                    Text(
-                        text = "Which side at bottom?",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    ) {
-                        ColorPickerTile(
-                            symbol = "♔", label = "White",
-                            bg = Color(0xFFF0D9B5), fg = Color(0xFF1A1A1A),
-                            modifier = Modifier.weight(1f), onClick = { onStartOtb(true) },
-                        )
-                        ColorPickerTile(
-                            symbol = "?", label = "Random",
-                            bg = MaterialTheme.colorScheme.surfaceVariant,
-                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.weight(1f), onClick = { onStartOtb((0..1).random() == 0) },
-                        )
-                        ColorPickerTile(
-                            symbol = "♚", label = "Black",
-                            bg = Color(0xFF2C2C2C), fg = Color(0xFFF0D9B5),
-                            modifier = Modifier.weight(1f), onClick = { onStartOtb(false) },
-                        )
+                    1 -> {
+                        Text("Two players, one device. Engine shows hints & arrows.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                        Text("Which side at bottom?", style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            ColorPickerTile("♔","White", Color(0xFFF0D9B5), Color(0xFF1A1A1A), Modifier.weight(1f)) { onStartOtb(true) }
+                            ColorPickerTile("?","Random", MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.onSurfaceVariant, Modifier.weight(1f)) { onStartOtb((0..1).random() == 0) }
+                            ColorPickerTile("♚","Black", Color(0xFF2C2C2C), Color(0xFFF0D9B5), Modifier.weight(1f)) { onStartOtb(false) }
+                        }
+                    }
+                    2 -> {
+                        // AI vs AI — pick which engine plays white
+                        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Surface(shape = RoundedCornerShape(10.dp), color = Color(0xFF0A1A2E)) {
+                                Row(modifier = Modifier.fillMaxWidth().padding(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text("⚔", fontSize = 18.sp)
+                                    Column {
+                                        Text("Engine Battle", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF4FC3F7))
+                                        Text("Stockfish 16 (full strength) vs Ryzix 1000 ELO (humanoid). Watch them play.", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4FC3F7).copy(alpha = 0.7f))
+                                    }
+                                }
+                            }
+                            Text("Who plays White?", style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                // SF plays white
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF0A1A2E),
+                                    modifier = Modifier.weight(1f).clickable { onStartAiVsAi(true) }
+                                        .border(1.5.dp, Color(0xFF1A3A5E), RoundedCornerShape(12.dp)),
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("SF", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF4FC3F7))
+                                        Text("Stockfish 16", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4FC3F7), textAlign = TextAlign.Center)
+                                        Text("plays White ♔", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = Color(0xFF4FC3F7).copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                                    }
+                                }
+                                // Ryzix plays white
+                                Surface(
+                                    shape = RoundedCornerShape(12.dp),
+                                    color = Color(0xFF1E0A0B),
+                                    modifier = Modifier.weight(1f).clickable { onStartAiVsAi(false) }
+                                        .border(1.5.dp, Color(0xFF5A1520), RoundedCornerShape(12.dp)),
+                                ) {
+                                    Column(modifier = Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        Text("R", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                                        Text("Ryzix 1000", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
+                                        Text("plays White ♔", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), textAlign = TextAlign.Center)
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -552,120 +694,87 @@ private fun NewGameDialog(
 }
 
 @Composable
-private fun ColorPickerTile(
-    symbol: String, label: String, bg: Color, fg: Color,
-    modifier: Modifier = Modifier, onClick: () -> Unit,
-) {
+private fun ColorPickerTile(symbol: String, label: String, bg: Color, fg: Color, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Surface(
-        shape = RoundedCornerShape(10.dp),
-        color = bg,
-        modifier = modifier
-            .clickable(onClick = onClick)
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(10.dp)),
+        shape = RoundedCornerShape(10.dp), color = bg,
+        modifier = modifier.clickable(onClick = onClick).border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f), RoundedCornerShape(10.dp)),
     ) {
-        Column(
-            modifier = Modifier.padding(vertical = 14.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(4.dp),
-        ) {
-            Text(text = symbol, fontSize = 26.sp, color = fg)
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelMedium,
-                color = fg.copy(alpha = 0.85f),
-                textAlign = TextAlign.Center,
-            )
+        Column(modifier = Modifier.padding(vertical = 14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(symbol, fontSize = 26.sp, color = fg)
+            Text(label, style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = 0.85f), textAlign = TextAlign.Center)
         }
     }
 }
 
-// ── Engine settings sheet ──────────────────────────────────────────────────────
+// ── Engine settings sheet (OTB) ───────────────────────────────────────────────
 
 @Composable
 fun InlineEngineSettings(
-    prefs: com.ryzix.chess.viewmodel.AppPrefs,
+    prefs: AppPrefs,
     engineAvailable: Boolean = true,
+    otbAnalysisModel: OtbAnalysisModel = OtbAnalysisModel.RYZIX,
+    onModelChange: (OtbAnalysisModel) -> Unit = {},
     onLevelChange: (Int) -> Unit,
     onSearchTimeChange: (Int) -> Unit,
     onMultiPvChange: (Int) -> Unit,
     onThreadsChange: (Int) -> Unit,
 ) {
     val levelLabels = listOf("800","1200","1400","1600","1800","2000","2200","2400","2600","2700","2800","3200")
-
     Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-        Text(
-            text = "Engine settings",
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+        Text("Engine settings", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            modifier = Modifier.padding(bottom = 16.dp))
 
-        EngineRow(
-            label = "Engine",
-            value = if (engineAvailable) "Ryzix Engine (ARM64)" else "Not available",
-        )
+        // Analysis model selector
+        Text("Analysis Model", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OtbAnalysisModel.entries.forEach { model ->
+                val selected = otbAnalysisModel == model
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    modifier = Modifier.weight(1f).clickable { onModelChange(model) },
+                ) {
+                    Text(
+                        text = model.displayName,
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                        color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 10.dp),
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        EngineRow("Engine", if (engineAvailable) "${otbAnalysisModel.displayName} (ARM64)" else "Not available")
 
         if (!engineAvailable) {
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(Modifier.height(8.dp))
             Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.errorContainer) {
-                Text(
-                    text = "Ryzix Engine binary not found. Install the APK built by GitHub Actions CI.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer,
-                    modifier = Modifier.padding(12.dp),
-                )
+                Text("Engine binary not found. Install APK from GitHub Actions.", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer, modifier = Modifier.padding(12.dp))
             }
             return
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            text = "Strength",
-            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            modifier = Modifier.padding(bottom = 8.dp),
-        )
-        Slider(
-            value = prefs.levelIndex.toFloat(),
-            onValueChange = { onLevelChange(it.toInt()) },
-            valueRange = 0f..11f,
-            steps = 10,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = levelLabels.getOrElse(prefs.levelIndex) { "?" },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                text = "Level ${prefs.levelIndex + 1} / 12",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
-            )
+        Spacer(Modifier.height(12.dp))
+        Text("Strength", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), modifier = Modifier.padding(bottom = 8.dp))
+        Slider(value = prefs.levelIndex.toFloat(), onValueChange = { onLevelChange(it.toInt()) }, valueRange = 0f..11f, steps = 10)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(levelLabels.getOrElse(prefs.levelIndex) { "?" }, style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+            Text("Level ${prefs.levelIndex + 1} / 12", style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
         }
     }
 }
 
 @Composable
 private fun EngineRow(label: String, value: String) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
-        )
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+        Text(value, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface)
     }
 }

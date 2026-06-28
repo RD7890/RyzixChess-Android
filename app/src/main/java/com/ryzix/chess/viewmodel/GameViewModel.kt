@@ -39,8 +39,16 @@ data class AppPrefs(
     val showArrows: Boolean = true,
 )
 
-// ── Move grade ────────────────────────────────────────────────────────────────
+// ── Game modes ─────────────────────────────────────────────────────────────────
+enum class GameMode { OTB, VS_ENGINE, AI_VS_AI }
 
+// OTB analysis model (same .so binary, different display label)
+enum class OtbAnalysisModel(val displayName: String) {
+    RYZIX("Ryzix Engine"),
+    STOCKFISH("Stockfish 16"),
+}
+
+// ── Move grade ─────────────────────────────────────────────────────────────────
 enum class MoveGrade(val label: String, val symbol: String, val colorHex: Long, val iconFilename: String) {
     BRILLIANT ("Brilliant",  "!!",  0xFF00BCD4, "brilliant.png"),
     BEST      ("Best Move",  "!",   0xFF4CAF50, "best.png"),
@@ -60,8 +68,7 @@ data class MoveGradeResult(
     val cpLoss: Float,
 )
 
-// ── Saved game record ─────────────────────────────────────────────────────────
-
+// ── Saved game ─────────────────────────────────────────────────────────────────
 data class SavedGame(
     val result: String,
     val moveCount: Int,
@@ -74,12 +81,7 @@ data class SavedGame(
         if (movesUci.isBlank()) return "[Result \"$result\"]\n\n$result"
         val game = ChessGame()
         movesUci.split(",").forEach { uci ->
-            if (uci.length >= 4) {
-                val from  = uci.substring(0, 2)
-                val to    = uci.substring(2, 4)
-                val promo = if (uci.length >= 5) uci[4] else 'q'
-                game.tryMove(from, to, promo)
-            }
+            if (uci.length >= 4) game.tryMove(uci.take(2), uci.drop(2).take(2), if (uci.length >= 5) uci[4] else 'q')
         }
         return game.generatePgn(result)
     }
@@ -88,26 +90,39 @@ data class SavedGame(
         fun fromRecord(s: String): SavedGame? {
             val p = s.split("|", limit = 4)
             if (p.size < 3) return null
-            return SavedGame(
-                result    = p[0],
-                moveCount = p[1].toIntOrNull() ?: 0,
-                timestamp = p[2].toLongOrNull() ?: 0L,
-                movesUci  = if (p.size >= 4) p[3] else "",
-            )
+            return SavedGame(p[0], p[1].toIntOrNull() ?: 0, p[2].toLongOrNull() ?: 0L, if (p.size >= 4) p[3] else "")
         }
     }
 }
 
-// ── ViewModel ─────────────────────────────────────────────────────────────────
+// ── AI vs AI thinking state ────────────────────────────────────────────────────
+data class AiVsAiState(
+    val sfPlaysWhite: Boolean = true,
+    val whiteThinking: Boolean = false,
+    val blackThinking: Boolean = false,
+    val whiteLabel: String = "Stockfish 16",
+    val blackLabel: String = "Ryzix 1000",
+    val isActive: Boolean = false,
+)
 
+// ── ViewModel ──────────────────────────────────────────────────────────────────
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     val chessGame = ChessGame()
     val gameState: StateFlow<GameState> = chessGame.state
 
+    // Main engine — used for OTB analysis and VS_ENGINE mode
     private val engine = RyzixEngine(application)
     private val soundManager = SoundManager(application)
     private var engineReady = false
+
+    // AI vs AI engines — each spawns its own libryzix.so process
+    private val aiWhiteEngine = RyzixEngine(application)
+    private val aiBlackEngine = RyzixEngine(application)
+    private var aiWhiteReady = false
+    private var aiBlackReady = false
+
+    // ── Exposed state ────────────────────────────────────────────────────────
 
     private val _engineEval = MutableStateFlow(0f)
     val engineEval: StateFlow<Float> = _engineEval
@@ -145,19 +160,30 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val _isReviewMode = MutableStateFlow(false)
     val isReviewMode: StateFlow<Boolean> = _isReviewMode
 
+    private val _gameMode = MutableStateFlow(GameMode.OTB)
+    val gameMode: StateFlow<GameMode> = _gameMode
+
+    private val _aiVsAiState = MutableStateFlow(AiVsAiState())
+    val aiVsAiState: StateFlow<AiVsAiState> = _aiVsAiState
+
+    private val _otbAnalysisModel = MutableStateFlow(OtbAnalysisModel.RYZIX)
+    val otbAnalysisModel: StateFlow<OtbAnalysisModel> = _otbAnalysisModel
+
     @Volatile private var isGradingPending = false
     @Volatile private var preMoveEval = 0f
     @Volatile private var preMoveLines: List<AnalysisLine> = emptyList()
     @Volatile private var engineMoveInFlight = false
     private var gameInitialized = false
-
     private val gradeCache = mutableMapOf<String, MoveGradeResult>()
 
     init {
         loadPrefs()
-        initEngine()
-        collectEngineOutput()
+        initMainEngine()
+        collectMainEngineOutput()
+        collectAiVsAiOutput()
     }
+
+    // ── Prefs & init ────────────────────────────────────────────────────────
 
     private fun loadPrefs() {
         viewModelScope.launch {
@@ -171,106 +197,218 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     showArrows   = (data[PrefKeys.SHOW_ARROWS] ?: 1) == 1,
                 )
                 val raw = data[PrefKeys.GAME_HISTORY] ?: ""
-                _gameHistory.value = raw
-                    .split("\n")
-                    .filter { it.isNotBlank() }
+                _gameHistory.value = raw.split("\n").filter { it.isNotBlank() }
                     .mapNotNull { SavedGame.fromRecord(it) }
-
                 if (!gameInitialized) {
-                    val savedMoves = data[PrefKeys.CURRENT_GAME_MOVES] ?: ""
-                    if (savedMoves.isNotBlank()) {
-                        chessGame.loadFromMoves(savedMoves)
-                    }
+                    val saved = data[PrefKeys.CURRENT_GAME_MOVES] ?: ""
+                    if (saved.isNotBlank()) chessGame.loadFromMoves(saved)
                     gameInitialized = true
                 }
             }
         }
     }
 
-    private fun initEngine() {
+    private fun initMainEngine() {
         viewModelScope.launch {
             engineReady = engine.init()
             _engineAvailable.value = engineReady
             if (engineReady) {
-                val settings = STOCKFISH_LEVELS.getOrElse(_prefs.value.levelIndex) { STOCKFISH_LEVELS[3] }
-                engine.applySettings(settings)
+                val s = STOCKFISH_LEVELS.getOrElse(_prefs.value.levelIndex) { STOCKFISH_LEVELS[3] }
+                engine.applySettings(s)
                 delay(300)
                 runAnalysis()
             }
         }
     }
 
-    private fun collectEngineOutput() {
+    // ── Main engine output collector ────────────────────────────────────────
+
+    private fun collectMainEngineOutput() {
         viewModelScope.launch {
             engine.bestMoveFlow.collect { bestMove ->
+                // Ignore in AI vs AI mode — those engines have their own collectors
+                if (_gameMode.value == GameMode.AI_VS_AI) return@collect
+
                 _isEngineThinking.value = false
                 engineMoveInFlight = false
 
-                // Arrows only in OTB mode — never reveal best move to player in vs Ryzix
+                // Arrows only in OTB
                 if (_isOtbMode.value && _engineEnabled.value && _prefs.value.showArrows && _analysisLines.value.isNotEmpty()) {
                     updateArrows(_analysisLines.value)
                 }
 
-                // Move grading only in OTB mode
+                // Move grading only in OTB
                 if (_isOtbMode.value && isGradingPending && _analysisLines.value.isNotEmpty()) {
                     isGradingPending = false
-                    val postEval = _analysisLines.value.firstOrNull()?.eval ?: _engineEval.value
-                    gradeLastMove(postEval)
+                    gradeLastMove(_analysisLines.value.firstOrNull()?.eval ?: _engineEval.value)
                 }
 
-                // vs Ryzix mode — engine makes its move automatically
-                if (!_isOtbMode.value && !gameState.value.isGameOver) {
-                    val isEngineTurn = if (_playerIsWhite.value)
-                        !gameState.value.isWhiteTurn
-                    else
-                        gameState.value.isWhiteTurn
-
+                // VS_ENGINE: engine plays its turn automatically
+                if (!_isOtbMode.value && _gameMode.value == GameMode.VS_ENGINE && !gameState.value.isGameOver) {
+                    val isEngineTurn = if (_playerIsWhite.value) !gameState.value.isWhiteTurn
+                                       else gameState.value.isWhiteTurn
                     if (isEngineTurn) {
-                        val from  = bestMove.substring(0, 2)
-                        val to    = bestMove.substring(2, 4)
+                        val from  = bestMove.take(2)
+                        val to    = bestMove.drop(2).take(2)
                         val promo = if (bestMove.length >= 5) bestMove[4] else 'q'
                         delay(300)
                         chessGame.tryMove(from, to, promo)
                         soundManager.play("move")
-                        // Don't run analysis in vs Ryzix — no hints shown; just save if game over
-                        if (gameState.value.isGameOver) {
-                            soundManager.play("confirmation")
-                            saveCurrentGame()
-                        }
+                        if (gameState.value.isGameOver) { soundManager.play("confirmation"); saveCurrentGame() }
                     }
                 }
             }
         }
+        viewModelScope.launch { engine.evalFlow.collect     { _engineEval.value     = it } }
+        viewModelScope.launch { engine.analysisFlow.collect { _analysisLines.value  = it } }
+    }
+
+    // ── AI vs AI engine output collectors ──────────────────────────────────
+
+    private fun collectAiVsAiOutput() {
+        // White engine collector
+        viewModelScope.launch {
+            aiWhiteEngine.bestMoveFlow.collect { bestMove ->
+                if (_gameMode.value != GameMode.AI_VS_AI) return@collect
+                if (!gameState.value.isWhiteTurn || gameState.value.isGameOver) return@collect
+                _aiVsAiState.value = _aiVsAiState.value.copy(whiteThinking = false)
+                handleAiVsAiMove(bestMove)
+            }
+        }
+        // Black engine collector
+        viewModelScope.launch {
+            aiBlackEngine.bestMoveFlow.collect { bestMove ->
+                if (_gameMode.value != GameMode.AI_VS_AI) return@collect
+                if (gameState.value.isWhiteTurn || gameState.value.isGameOver) return@collect
+                _aiVsAiState.value = _aiVsAiState.value.copy(blackThinking = false)
+                handleAiVsAiMove(bestMove)
+            }
+        }
+    }
+
+    private suspend fun handleAiVsAiMove(bestMove: String) {
+        if (gameState.value.isGameOver) return
+        val from  = bestMove.take(2)
+        val to    = bestMove.drop(2).take(2)
+        val promo = if (bestMove.length >= 5) bestMove[4] else 'q'
+        chessGame.tryMove(from, to, promo)
+        soundManager.play("move")
+        if (gameState.value.isGameOver) {
+            soundManager.play("confirmation")
+            saveCurrentGame()
+            return
+        }
+        scheduleNextAiMove()
+    }
+
+    private fun scheduleNextAiMove() {
+        if (_gameMode.value != GameMode.AI_VS_AI || gameState.value.isGameOver) return
+        val isWhiteTurn  = gameState.value.isWhiteTurn
+        val sfPlaysWhite = _aiVsAiState.value.sfPlaysWhite
+        val isSfTurn     = (isWhiteTurn == sfPlaysWhite)
 
         viewModelScope.launch {
-            engine.evalFlow.collect { eval ->
-                _engineEval.value = eval
+            // Humanoid think delays:
+            // Stockfish 16 — 0.8-2.5s  (strong, deliberate)
+            // Ryzix 1000  — 2.0-5.0s  (human-like, slower, uncertain)
+            val delayMs = if (isSfTurn) (800L..2500L).random() else (2000L..5000L).random()
+
+            _aiVsAiState.value = _aiVsAiState.value.copy(
+                whiteThinking = isWhiteTurn,
+                blackThinking = !isWhiteTurn,
+            )
+            delay(delayMs)
+
+            if (_gameMode.value != GameMode.AI_VS_AI || gameState.value.isGameOver) {
+                _aiVsAiState.value = _aiVsAiState.value.copy(whiteThinking = false, blackThinking = false)
+                return@launch
             }
+
+            val fen      = chessGame.getCurrentFen()
+            val settings = if (isSfTurn) SF_BATTLE_SETTINGS else RYZIX_1000_SETTINGS
+            val aiEngine = if (isWhiteTurn) aiWhiteEngine else aiBlackEngine
+            aiEngine.applySettings(settings)
+            aiEngine.startSearch(fen, settings)
+        }
+    }
+
+    // ── AI vs AI: start ─────────────────────────────────────────────────────
+
+    fun startAiVsAi(sfPlaysWhite: Boolean) {
+        engine.stop()
+        aiWhiteEngine.stop()
+        aiBlackEngine.stop()
+        _isEngineThinking.value = false
+        engineMoveInFlight = false
+        _engineEval.value = 0f
+        _analysisLines.value = emptyList()
+        _lastMoveGrade.value = null
+        _promotionPending.value = null
+        _isReviewMode.value = false
+        _isOtbMode.value = false
+        _gameMode.value = GameMode.AI_VS_AI
+        isGradingPending = false
+        gradeCache.clear()
+        chessGame.reset()
+        chessGame.clearArrows()
+        chessGame.setFlipped(false)
+
+        val whiteLabel = if (sfPlaysWhite) "Stockfish 16" else "Ryzix 1000"
+        val blackLabel = if (sfPlaysWhite) "Ryzix 1000"  else "Stockfish 16"
+        _aiVsAiState.value = AiVsAiState(
+            sfPlaysWhite  = sfPlaysWhite,
+            whiteThinking = false,
+            blackThinking = false,
+            whiteLabel    = whiteLabel,
+            blackLabel    = blackLabel,
+            isActive      = true,
+        )
+
+        viewModelScope.launch {
+            getApplication<Application>().dataStore.edit { it[PrefKeys.CURRENT_GAME_MOVES] = "" }
         }
 
         viewModelScope.launch {
-            engine.analysisFlow.collect { lines ->
-                _analysisLines.value = lines
-            }
+            // Lazily init AI engines (each spawns its own libryzix.so process)
+            if (!aiWhiteReady) { aiWhiteReady = aiWhiteEngine.init(); delay(300) }
+            if (!aiBlackReady) { aiBlackReady = aiBlackEngine.init(); delay(300) }
+            if (!aiWhiteReady || !aiBlackReady) return@launch
+            delay(600)
+            // White always starts
+            scheduleNextAiMove()
         }
+    }
+
+    fun stopAiVsAi() {
+        aiWhiteEngine.stop()
+        aiBlackEngine.stop()
+        _aiVsAiState.value = _aiVsAiState.value.copy(
+            whiteThinking = false, blackThinking = false, isActive = false,
+        )
+    }
+
+    fun resumeAiVsAi() {
+        if (_gameMode.value != GameMode.AI_VS_AI || gameState.value.isGameOver) return
+        _aiVsAiState.value = _aiVsAiState.value.copy(isActive = true)
+        scheduleNextAiMove()
+    }
+
+    // ── OTB analysis model ───────────────────────────────────────────────────
+
+    fun setOtbAnalysisModel(model: OtbAnalysisModel) {
+        _otbAnalysisModel.value = model
     }
 
     // ── Move grading ──────────────────────────────────────────────────────────
 
     private fun gradeLastMove(postEval: Float) {
-        val currentFen = chessGame.getCurrentFen()
-
-        gradeCache[currentFen]?.let {
-            _lastMoveGrade.value = it
-            return
-        }
-
+        val fen = chessGame.getCurrentFen()
+        gradeCache[fen]?.let { _lastMoveGrade.value = it; return }
         val cpLoss = preMoveEval + postEval
         val preBestUci = preMoveLines.firstOrNull()?.move ?: ""
         val lastMove = gameState.value.moves.lastOrNull()
         val playedUci = if (lastMove != null) "${lastMove.from}${lastMove.to}" else ""
         val isBestMove = playedUci.take(4) == preBestUci.take(4)
-
         val grade = when {
             cpLoss <= 0.05f && isBestMove -> MoveGrade.BEST
             cpLoss <= 0.05f              -> MoveGrade.BRILLIANT
@@ -281,26 +419,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             cpLoss <= 2.00f              -> MoveGrade.MISTAKE
             else                         -> MoveGrade.BLUNDER
         }
-
-        val result = MoveGradeResult(
-            grade = grade, playedUci = playedUci, bestUci = preBestUci, cpLoss = cpLoss,
-        )
-
-        gradeCache[currentFen] = result
+        val result = MoveGradeResult(grade, playedUci, preBestUci, cpLoss)
+        gradeCache[fen] = result
         _lastMoveGrade.value = result
     }
-
-    // ── Arrow drawing (OTB only) ───────────────────────────────────────────────
 
     private fun updateArrows(lines: List<AnalysisLine>) {
         val arrows = lines.take(3).mapIndexedNotNull { idx, line ->
             val from = line.move.take(2).takeIf { it.length == 2 } ?: return@mapIndexedNotNull null
             val to   = line.move.drop(2).take(2).takeIf { it.length == 2 } ?: return@mapIndexedNotNull null
-            Arrow(from, to, when (idx) {
-                0 -> ArrowColor.GREEN
-                1 -> ArrowColor.YELLOW
-                else -> ArrowColor.RED
-            })
+            Arrow(from, to, when (idx) { 0 -> ArrowColor.GREEN; 1 -> ArrowColor.YELLOW; else -> ArrowColor.RED })
         }
         chessGame.setArrows(arrows)
     }
@@ -308,61 +436,43 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private fun runAnalysis() {
         if (!engineReady || !_engineEnabled.value) return
         val base = STOCKFISH_LEVELS.getOrElse(_prefs.value.levelIndex) { STOCKFISH_LEVELS[3] }
-        val settings = base.copy(
-            multiPv      = maxOf(3, _prefs.value.multiPv),
-            searchTimeMs = maxOf(3000, base.searchTimeMs),
-        )
+        val settings = base.copy(multiPv = maxOf(3, _prefs.value.multiPv), searchTimeMs = maxOf(3000, base.searchTimeMs))
         engine.applySettings(settings)
         _isEngineThinking.value = true
         engine.startAnalysis(chessGame.getCurrentFen(), settings)
     }
 
-    // ── Public API ─────────────────────────────────────────────────────────────
-
-    fun setOtbMode(otb: Boolean) { _isOtbMode.value = otb }
+    // ── Square tap (OTB + VS_ENGINE only) ────────────────────────────────────
 
     fun onSquareTap(square: String) {
+        if (_gameMode.value == GameMode.AI_VS_AI) return  // spectator — no interaction during AI battle
         val state = gameState.value
-        if (state.isGameOver) return
-        if (_isReviewMode.value) return
-
+        if (state.isGameOver || _isReviewMode.value) return
         if (!_isOtbMode.value) {
             val isPlayerTurn = if (_playerIsWhite.value) state.isWhiteTurn else !state.isWhiteTurn
             if (!isPlayerTurn || engineMoveInFlight) return
         }
-
         val prevSelected = state.selectedSquare
-
         if (prevSelected != null && state.legalMoves.contains(square)) {
             if (chessGame.isPromotionMove(prevSelected, square)) {
-                _promotionPending.value = Pair(prevSelected, square)
-                chessGame.selectSquare(prevSelected)
-                return
+                _promotionPending.value = Pair(prevSelected, square); chessGame.selectSquare(prevSelected); return
             }
-
             val moved = chessGame.tryMove(prevSelected, square)
             if (moved) {
-                val lastMove = gameState.value.moves.lastOrNull()
-                val isCapture = lastMove?.isCapture ?: false
+                val isCapture = gameState.value.moves.lastOrNull()?.isCapture ?: false
                 soundManager.play(if (isCapture) "capture" else "move")
-
                 chessGame.clearArrows()
                 persistCurrentGame()
-
                 if (_isOtbMode.value) {
                     isGradingPending = engineReady && _engineEnabled.value
-                    preMoveEval = _engineEval.value
+                    preMoveEval  = _engineEval.value
                     preMoveLines = _analysisLines.value
                     _lastMoveGrade.value = null
                     _analysisLines.value = emptyList()
                     _engineEval.value = 0f
                     runAnalysis()
-                    if (gameState.value.isGameOver) {
-                        soundManager.play("confirmation")
-                        saveCurrentGame()
-                    }
+                    if (gameState.value.isGameOver) { soundManager.play("confirmation"); saveCurrentGame() }
                 } else {
-                    // vs Ryzix: trigger engine to play immediately
                     _analysisLines.value = emptyList()
                     _engineEval.value = 0f
                     triggerEngineMove()
@@ -376,25 +486,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun confirmPromotion(promoChar: Char) {
         val pending = _promotionPending.value ?: return
         _promotionPending.value = null
-
         val moved = chessGame.tryMove(pending.first, pending.second, promoChar)
         if (moved) {
             soundManager.play("move")
             chessGame.clearArrows()
             persistCurrentGame()
-
             if (_isOtbMode.value) {
                 isGradingPending = engineReady && _engineEnabled.value
-                preMoveEval = _engineEval.value
+                preMoveEval  = _engineEval.value
                 preMoveLines = _analysisLines.value
                 _lastMoveGrade.value = null
                 _analysisLines.value = emptyList()
                 _engineEval.value = 0f
                 runAnalysis()
-                if (gameState.value.isGameOver) {
-                    soundManager.play("confirmation")
-                    saveCurrentGame()
-                }
+                if (gameState.value.isGameOver) { soundManager.play("confirmation"); saveCurrentGame() }
             } else {
                 _analysisLines.value = emptyList()
                 _engineEval.value = 0f
@@ -403,9 +508,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun cancelPromotion() {
-        _promotionPending.value = null
-    }
+    fun cancelPromotion() { _promotionPending.value = null }
 
     fun triggerEngineMove() {
         if (!engineReady || gameState.value.isGameOver) return
@@ -418,19 +521,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     fun toggleEngine() {
         _engineEnabled.value = !_engineEnabled.value
-        if (_engineEnabled.value) {
-            runAnalysis()
-        } else {
-            engine.stop()
-            _isEngineThinking.value = false
-            _analysisLines.value = emptyList()
-            chessGame.clearArrows()
-        }
+        if (_engineEnabled.value) runAnalysis()
+        else { engine.stop(); _isEngineThinking.value = false; _analysisLines.value = emptyList(); chessGame.clearArrows() }
     }
 
-    // ── Game control ───────────────────────────────────────────────────────────
+    // ── New game (OTB / VS_ENGINE) ────────────────────────────────────────────
 
     fun newGame(otbMode: Boolean = true, playerIsWhite: Boolean = true) {
+        // Stop AI engines if they were running
+        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
         engine.stop()
         _isEngineThinking.value = false
         engineMoveInFlight = false
@@ -442,112 +541,68 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         isGradingPending = false
         _isOtbMode.value = otbMode
         _playerIsWhite.value = playerIsWhite
+        _gameMode.value = if (otbMode) GameMode.OTB else GameMode.VS_ENGINE
+        _aiVsAiState.value = AiVsAiState()
         gradeCache.clear()
         chessGame.reset()
         chessGame.clearArrows()
         chessGame.setFlipped(!playerIsWhite)
-
         viewModelScope.launch {
             getApplication<Application>().dataStore.edit { it[PrefKeys.CURRENT_GAME_MOVES] = "" }
         }
-
         viewModelScope.launch {
             delay(400)
-            if (otbMode) {
-                // OTB: run analysis with arrows/hints visible
-                runAnalysis()
-            } else {
-                // vs Ryzix: engine plays black first if player is white, otherwise engine moves immediately
-                if (!playerIsWhite) {
-                    triggerEngineMove()
-                }
-                // If player is white, wait for player to make first move — no analysis shown
-            }
+            if (otbMode) runAnalysis()
+            else if (!playerIsWhite) triggerEngineMove()
         }
     }
 
     fun navigateBack() {
-        engine.stop()
-        _isEngineThinking.value = false
-        _lastMoveGrade.value = null
-        chessGame.navigateBack()
-        chessGame.clearArrows()
+        engine.stop(); _isEngineThinking.value = false; _lastMoveGrade.value = null
+        chessGame.navigateBack(); chessGame.clearArrows()
         if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
     }
 
     fun navigateForward() {
         _lastMoveGrade.value = null
-        chessGame.navigateForward()
-        chessGame.clearArrows()
-        val cachedGrade = gradeCache[gameState.value.fen]
-        if (cachedGrade != null) _lastMoveGrade.value = cachedGrade
+        chessGame.navigateForward(); chessGame.clearArrows()
+        gradeCache[gameState.value.fen]?.let { _lastMoveGrade.value = it }
         if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
     }
 
     fun undoOtbMove() {
         if (_isReviewMode.value) return
-        engine.stop()
-        _isEngineThinking.value = false
-        _lastMoveGrade.value = null
+        engine.stop(); _isEngineThinking.value = false; _lastMoveGrade.value = null
         chessGame.undoMove()
         if (!_isOtbMode.value) chessGame.undoMove()
-        chessGame.clearArrows()
-        persistCurrentGame()
+        chessGame.clearArrows(); persistCurrentGame()
         if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
-    }
-
-    fun undoMove() {
-        engine.stop()
-        _isEngineThinking.value = false
-        chessGame.undoMove()
-        chessGame.undoMove()
     }
 
     fun flipBoard() { chessGame.flipBoard() }
 
-    // ── History game loading ───────────────────────────────────────────────────
+    // ── History ───────────────────────────────────────────────────────────────
 
     fun loadGameFromHistory(game: SavedGame) {
-        engine.stop()
-        _isEngineThinking.value = false
-        _analysisLines.value = emptyList()
-        _lastMoveGrade.value = null
-        _promotionPending.value = null
-        _isReviewMode.value = true
-        _isOtbMode.value = true
-
-        if (game.movesUci.isNotBlank()) {
-            chessGame.loadFromMoves(game.movesUci)
-        } else {
-            chessGame.reset()
-        }
-
-        viewModelScope.launch {
-            delay(200)
-            if (_engineEnabled.value) runAnalysis()
-        }
+        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+        engine.stop(); _isEngineThinking.value = false
+        _analysisLines.value = emptyList(); _lastMoveGrade.value = null
+        _promotionPending.value = null; _isReviewMode.value = true
+        _isOtbMode.value = true; _gameMode.value = GameMode.OTB
+        _aiVsAiState.value = AiVsAiState()
+        if (game.movesUci.isNotBlank()) chessGame.loadFromMoves(game.movesUci) else chessGame.reset()
+        viewModelScope.launch { delay(200); if (_engineEnabled.value) runAnalysis() }
     }
 
     fun continueGameFromHistory(game: SavedGame) {
-        engine.stop()
-        _isEngineThinking.value = false
-        _analysisLines.value = emptyList()
-        _lastMoveGrade.value = null
-        _promotionPending.value = null
-        _isReviewMode.value = false
-        _isOtbMode.value = true
-        gradeCache.clear()
-
-        if (game.movesUci.isNotBlank()) {
-            chessGame.loadFromMoves(game.movesUci)
-        } else {
-            chessGame.reset()
-        }
-
-        viewModelScope.launch {
-            delay(200)
-            if (_engineEnabled.value) runAnalysis()
-        }
+        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+        engine.stop(); _isEngineThinking.value = false
+        _analysisLines.value = emptyList(); _lastMoveGrade.value = null
+        _promotionPending.value = null; _isReviewMode.value = false
+        _isOtbMode.value = true; _gameMode.value = GameMode.OTB
+        _aiVsAiState.value = AiVsAiState(); gradeCache.clear()
+        if (game.movesUci.isNotBlank()) chessGame.loadFromMoves(game.movesUci) else chessGame.reset()
+        viewModelScope.launch { delay(200); if (_engineEnabled.value) runAnalysis() }
     }
 
     fun clearHistory() {
@@ -560,27 +615,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun loadGameFromPgn(pgn: String): Boolean {
         val ok = chessGame.loadFromPgn(pgn)
         if (ok) {
-            engine.stop()
-            _isEngineThinking.value = false
-            _analysisLines.value = emptyList()
-            _lastMoveGrade.value = null
-            _promotionPending.value = null
-            _isReviewMode.value = true
-            _isOtbMode.value = true
-            viewModelScope.launch {
-                delay(200)
-                if (_engineEnabled.value) runAnalysis()
-            }
+            if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+            engine.stop(); _isEngineThinking.value = false
+            _analysisLines.value = emptyList(); _lastMoveGrade.value = null
+            _promotionPending.value = null; _isReviewMode.value = true
+            _isOtbMode.value = true; _gameMode.value = GameMode.OTB
+            _aiVsAiState.value = AiVsAiState()
+            viewModelScope.launch { delay(200); if (_engineEnabled.value) runAnalysis() }
         }
         return ok
     }
 
-    // ── PGN export ────────────────────────────────────────────────────────────
-
-    fun getCurrentGamePgn(): String {
-        val result = gameState.value.gameResult ?: "*"
-        return chessGame.generatePgn(result)
-    }
+    fun getCurrentGamePgn(): String = chessGame.generatePgn(gameState.value.gameResult ?: "*")
 
     fun sharePgn(pgn: String) {
         val intent = Intent(Intent.ACTION_SEND).apply {
@@ -590,97 +636,58 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         getApplication<Application>().startActivity(
-            Intent.createChooser(intent, "Export PGN").also {
-                it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
+            Intent.createChooser(intent, "Export PGN").also { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
         )
     }
 
-    // ── Active-game helpers ───────────────────────────────────────────────────
-
     fun hasActiveGame(): Boolean =
-        gameState.value.moves.isNotEmpty() &&
-        !gameState.value.isGameOver &&
-        !_isReviewMode.value
+        gameState.value.moves.isNotEmpty() && !gameState.value.isGameOver && !_isReviewMode.value
 
     fun saveGameInProgress() {
         val movesUci = chessGame.getMovesAsUci()
         if (movesUci.isBlank()) return
-        val state = gameState.value
-        val game = SavedGame(
-            result    = "*",
-            moveCount = state.moves.size,
-            timestamp = System.currentTimeMillis(),
-            movesUci  = movesUci,
-        )
+        val s = gameState.value
+        val game = SavedGame("*", s.moves.size, System.currentTimeMillis(), movesUci)
         viewModelScope.launch {
             val current = _gameHistory.value.toMutableList()
-            current.removeAll { it.result == "*" }
-            current.add(0, game)
-            val kept = current.take(50)
-            _gameHistory.value = kept
-            val raw = kept.joinToString("\n") { it.toRecord() }
-            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = raw }
+            current.removeAll { it.result == "*" }; current.add(0, game)
+            val kept = current.take(50); _gameHistory.value = kept
+            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() } }
         }
     }
 
     private fun saveCurrentGame() {
         val movesUci = chessGame.getMovesAsUci()
-        val state = gameState.value
-        val result = state.gameResult ?: "*"
-        val game = SavedGame(
-            result    = result,
-            moveCount = state.moves.size,
-            timestamp = System.currentTimeMillis(),
-            movesUci  = movesUci,
-        )
+        val s = gameState.value
+        val game = SavedGame(s.gameResult ?: "*", s.moves.size, System.currentTimeMillis(), movesUci)
         viewModelScope.launch {
             val current = _gameHistory.value.toMutableList()
-            current.removeAll { it.result == "*" }
-            current.add(0, game)
-            val kept = current.take(50)
-            _gameHistory.value = kept
-            val raw = kept.joinToString("\n") { it.toRecord() }
-            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = raw }
+            current.removeAll { it.result == "*" }; current.add(0, game)
+            val kept = current.take(50); _gameHistory.value = kept
+            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() } }
         }
     }
 
     private fun persistCurrentGame() {
         viewModelScope.launch {
-            val moves = chessGame.getMovesAsUci()
-            getApplication<Application>().dataStore.edit { it[PrefKeys.CURRENT_GAME_MOVES] = moves }
+            getApplication<Application>().dataStore.edit { it[PrefKeys.CURRENT_GAME_MOVES] = chessGame.getMovesAsUci() }
         }
     }
 
     fun saveLevel(index: Int) {
-        viewModelScope.launch {
-            getApplication<Application>().dataStore.edit { it[PrefKeys.LEVEL] = index }
-        }
+        viewModelScope.launch { getApplication<Application>().dataStore.edit { it[PrefKeys.LEVEL] = index } }
         engine.stop()
         if (_isOtbMode.value) runAnalysis()
     }
-
-    fun saveSearchTime(ms: Int) {
-        viewModelScope.launch {
-            getApplication<Application>().dataStore.edit { it[PrefKeys.SEARCH_TIME] = ms }
-        }
-    }
-
-    fun saveMultiPv(n: Int) {
-        viewModelScope.launch {
-            getApplication<Application>().dataStore.edit { it[PrefKeys.MULTI_PV] = n }
-        }
-    }
-
-    fun saveThreads(n: Int) {
-        viewModelScope.launch {
-            getApplication<Application>().dataStore.edit { it[PrefKeys.THREADS] = n }
-        }
-    }
+    fun saveSearchTime(ms: Int) { viewModelScope.launch { getApplication<Application>().dataStore.edit { it[PrefKeys.SEARCH_TIME] = ms } } }
+    fun saveMultiPv(n: Int)     { viewModelScope.launch { getApplication<Application>().dataStore.edit { it[PrefKeys.MULTI_PV]    = n  } } }
+    fun saveThreads(n: Int)     { viewModelScope.launch { getApplication<Application>().dataStore.edit { it[PrefKeys.THREADS]     = n  } } }
 
     override fun onCleared() {
         super.onCleared()
         engine.quit()
+        aiWhiteEngine.quit()
+        aiBlackEngine.quit()
         soundManager.release()
     }
 }

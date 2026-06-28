@@ -52,6 +52,8 @@ fun StockfishPanel(
     modifier: Modifier = Modifier,
     // When false (vs Ryzix mode), hide analysis lines and arrows from the user
     isOtbMode: Boolean = true,
+    // OTB analysis model display label (Ryzix Engine or Stockfish 16)
+    analysisModelName: String = "Ryzix Engine",
 ) {
     var expanded by remember { mutableStateOf(true) }
 
@@ -80,7 +82,7 @@ fun StockfishPanel(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Ryzix Engine",
+                    text = analysisModelName,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )

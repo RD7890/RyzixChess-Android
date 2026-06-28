@@ -44,20 +44,18 @@ import com.ryzix.chess.ui.screens.GameScreen
 import com.ryzix.chess.ui.screens.HomeScreen
 import com.ryzix.chess.ui.screens.SettingsScreen
 import com.ryzix.chess.ui.screens.ThemeSettingsScreen
+import com.ryzix.chess.viewmodel.GameMode
 import com.ryzix.chess.viewmodel.GameViewModel
 import kotlinx.coroutines.launch
 
 sealed class Screen(val route: String) {
-    object Main : Screen("main")
+    object Main          : Screen("main")
     object ThemeSettings : Screen("theme_settings")
 }
 
 @Composable
 fun AppNavigation(navController: NavHostController = rememberNavController()) {
-    NavHost(
-        navController = navController,
-        startDestination = Screen.Main.route,
-    ) {
+    NavHost(navController = navController, startDestination = Screen.Main.route) {
         composable(Screen.Main.route) {
             MainPagerScreen(onThemeSettings = { navController.navigate(Screen.ThemeSettings.route) })
         }
@@ -79,19 +77,26 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
     val onPlayPage = pagerState.currentPage == 1
     if (!onPlayPage && isFullscreen) isFullscreen = false
 
-    var showSavePrompt  by remember { mutableStateOf(false) }
-    var pendingPage     by remember { mutableIntStateOf(0) }
+    var showSavePrompt by remember { mutableStateOf(false) }
+    var pendingPage    by remember { mutableIntStateOf(0) }
 
     val gameState    by vm.gameState.collectAsState()
     val isReviewMode by vm.isReviewMode.collectAsState()
+    val gameMode     by vm.gameMode.collectAsState()
 
     fun navigateTo(target: Int) {
-        val leavingPlay = pagerState.currentPage == 1 && target != 1
-        val active = gameState.moves.isNotEmpty() && !gameState.isGameOver && !isReviewMode
+        val leavingPlay  = pagerState.currentPage == 1 && target != 1
+        // AI vs AI: never prompt to save — it's not the user's game
+        val isAiVsAi    = gameMode == GameMode.AI_VS_AI
+        val active       = !isAiVsAi &&
+                           gameState.moves.isNotEmpty() &&
+                           !gameState.isGameOver &&
+                           !isReviewMode
         if (leavingPlay && active) {
             pendingPage = target
             showSavePrompt = true
         } else {
+            if (leavingPlay && isAiVsAi) vm.stopAiVsAi()
             scope.launch { pagerState.animateScrollToPage(target) }
         }
     }
@@ -105,10 +110,7 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
         containerColor = Color(0xFF0D0D0D),
         bottomBar = {
             if (!(isFullscreen && onPlayPage)) {
-                NavigationBar(
-                    containerColor = navBg,
-                    tonalElevation = 0.dp,
-                ) {
+                NavigationBar(containerColor = navBg, tonalElevation = 0.dp) {
                     val items = listOf(
                         Triple("Home",     Icons.Rounded.Home,      0),
                         Triple("Play",     Icons.Rounded.PlayArrow, 1),
@@ -135,9 +137,9 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
         },
     ) { padding ->
         HorizontalPager(
-            state = pagerState,
+            state            = pagerState,
             userScrollEnabled = false,
-            modifier = Modifier
+            modifier          = Modifier
                 .fillMaxSize()
                 .padding(padding),
         ) { page ->
@@ -151,15 +153,19 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
                         vm.newGame(otbMode = true, playerIsWhite = true)
                         scope.launch { pagerState.animateScrollToPage(1) }
                     },
+                    onEngineBattle = { sfPlaysWhite ->
+                        vm.startAiVsAi(sfPlaysWhite)
+                        scope.launch { pagerState.animateScrollToPage(1) }
+                    },
                 )
                 1 -> GameScreen(
-                    onBack = { navigateTo(0) },
-                    vm = vm,
-                    isFullscreen = isFullscreen,
-                    onToggleFullscreen = { isFullscreen = !isFullscreen },
+                    onBack              = { navigateTo(0) },
+                    vm                  = vm,
+                    isFullscreen        = isFullscreen,
+                    onToggleFullscreen  = { isFullscreen = !isFullscreen },
                 )
                 2 -> GameHistoryScreen(
-                    vm = vm,
+                    vm           = vm,
                     onGameLoaded = { game ->
                         vm.loadGameFromHistory(game)
                         scope.launch { pagerState.animateScrollToPage(1) }
@@ -173,7 +179,7 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
                     },
                 )
                 3 -> SettingsScreen(
-                    onBack = { navigateTo(0) },
+                    onBack         = { navigateTo(0) },
                     onThemeSettings = onThemeSettings,
                 )
             }
@@ -184,35 +190,20 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showSavePrompt = false },
             title = { Text("Save game?", fontWeight = FontWeight.Bold) },
-            text  = {
-                Text(
-                    "Do you want to save this game so you can continue or analyse it later?",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            },
+            text  = { Text("Do you want to save this game so you can continue or analyse it later?",
+                style = MaterialTheme.typography.bodyMedium) },
             confirmButton = {
-                Button(
-                    onClick = {
-                        vm.saveGameInProgress()
-                        showSavePrompt = false
-                        scope.launch { pagerState.animateScrollToPage(pendingPage) }
-                    },
-                ) {
-                    Text("Save & Leave")
-                }
+                Button(onClick = {
+                    vm.saveGameInProgress()
+                    showSavePrompt = false
+                    scope.launch { pagerState.animateScrollToPage(pendingPage) }
+                }) { Text("Save & Leave") }
             },
             dismissButton = {
                 OutlinedButton(
-                    onClick = {
-                        showSavePrompt = false
-                        scope.launch { pagerState.animateScrollToPage(pendingPage) }
-                    },
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error,
-                    ),
-                ) {
-                    Text("Discard")
-                }
+                    onClick = { showSavePrompt = false; scope.launch { pagerState.animateScrollToPage(pendingPage) } },
+                    colors  = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text("Discard") }
             },
         )
     }
