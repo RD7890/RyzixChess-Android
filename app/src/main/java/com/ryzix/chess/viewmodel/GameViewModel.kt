@@ -118,6 +118,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private var engineReady    = false
     private var sfAiReady      = false
     private var ryzixAiReady   = false
+    private var battleThinkMs  = 5_000  // user-chosen cap, applied to both engines
 
     // ── Exposed state ─────────────────────────────────────────────────────────
     private val _engineEval      = MutableStateFlow(0f)
@@ -252,8 +253,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ── AI vs AI collectors ───────────────────────────────────────────────────
-    // sfAiEngine  → real Stockfish 16 (libstockfish.so)
-    // ryzixAiEngine → libryzix.so at 1000 ELO
+    // sfAiEngine  → Stockfish 16 at absolute max (256 MB hash, 4 threads, 5 s/move)
+    // ryzixAiEngine → Ryzix at full strength (128 MB hash, 4 threads, 8 s/move, humanoid mode)
 
     private fun collectAiVsAiOutput() {
         // Stockfish 16 engine — handles moves when it's SF's turn.
@@ -333,8 +334,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val currentIsSfTurn    = (currentIsWhiteTurn == _aiVsAiState.value.sfPlaysWhite)
 
             val fen      = chessGame.getCurrentFen()
-            val settings = if (currentIsSfTurn) SF_BATTLE_SETTINGS else RYZIX_1000_SETTINGS
-            // Route to the correct binary
+            // Cap both engines to the user-chosen max think time
+            val settings = if (currentIsSfTurn)
+                SF_BATTLE_SETTINGS.copy(searchTimeMs = battleThinkMs)
+            else
+                RYZIX_BATTLE_SETTINGS.copy(searchTimeMs = battleThinkMs)
             val aiEngine = if (currentIsSfTurn) sfAiEngine else ryzixAiEngine
             aiEngine.applySettings(settings)
             aiEngine.startSearch(fen, settings)
@@ -342,7 +346,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ── Start AI vs AI ────────────────────────────────────────────────────────
-    fun startAiVsAi(sfPlaysWhite: Boolean) {
+    fun startAiVsAi(sfPlaysWhite: Boolean, thinkSecs: Int = 5) {
+        battleThinkMs = (thinkSecs * 1000).coerceIn(1_000, 60_000)
         engine.stop()
         sfAiEngine.stop()
         ryzixAiEngine.stop()
@@ -361,8 +366,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         chessGame.clearArrows()
         chessGame.setFlipped(false)
 
-        val whiteLabel = if (sfPlaysWhite) "Stockfish 16" else "Ryzix 1000"
-        val blackLabel = if (sfPlaysWhite) "Ryzix 1000"  else "Stockfish 16"
+        val whiteLabel = if (sfPlaysWhite) "Stockfish 16" else "Ryzix"
+        val blackLabel = if (sfPlaysWhite) "Ryzix"        else "Stockfish 16"
         _aiVsAiState.value = AiVsAiState(
             sfPlaysWhite  = sfPlaysWhite,
             whiteThinking = false,

@@ -35,7 +35,7 @@ private val Muted       = Color(0xFF888888)
 fun HomeScreen(
     onPlayVsRyzix:  (playerIsWhite: Boolean) -> Unit,
     onPlayOtb:      () -> Unit = {},
-    onEngineBattle: (sfPlaysWhite: Boolean) -> Unit = {},
+    onEngineBattle: (sfPlaysWhite: Boolean, thinkSecs: Int) -> Unit = { _, _ -> },
 ) {
     var selectedTime    by remember { mutableStateOf("5+0") }
     var selectedTimeSub by remember { mutableStateOf("5 min · Blitz") }
@@ -47,6 +47,8 @@ fun HomeScreen(
 
     // Tracks which card is showing color-picker or other sub-UI
     var showBattleColorPicker by remember { mutableStateOf(false) }
+    var battleThinkSecs       by remember { mutableIntStateOf(5) }
+    val thinkOptions = listOf(1, 3, 5, 10, 15, 30)
 
     Column(
         modifier = Modifier
@@ -218,12 +220,41 @@ fun HomeScreen(
                     Text("Start Engine Battle", fontSize = 15.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                 }
             } else {
-                // Color picker
+                // ── Max think time picker ─────────────────────────────────────
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Max think time / move", fontSize = 12.sp, color = Muted, fontWeight = FontWeight.Medium)
+                    Text(
+                        if (battleThinkSecs < 60) "${battleThinkSecs}s" else "${battleThinkSecs / 60}m",
+                        fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = Color.White,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    thinkOptions.forEach { secs ->
+                        ChipButton(
+                            label = if (secs < 60) "${secs}s" else "${secs / 60}m",
+                            selected = battleThinkSecs == secs,
+                            onClick = { battleThinkSecs = secs },
+                            modifier = Modifier.weight(1f),
+                            fontSize = 11,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
+
+                // ── Color picker ──────────────────────────────────────────────
                 Text("Who plays White?", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     // Stockfish plays White
                     Surface(
-                        onClick = { showBattleColorPicker = false; onEngineBattle(true) },
+                        onClick = { showBattleColorPicker = false; onEngineBattle(true, battleThinkSecs) },
                         shape = RoundedCornerShape(12.dp),
                         color = Color(0xFF0D2840),
                         border = androidx.compose.foundation.BorderStroke(1.5.dp, SfBlueDark),
@@ -241,7 +272,7 @@ fun HomeScreen(
                     }
                     // Ryzix plays White
                     Surface(
-                        onClick = { showBattleColorPicker = false; onEngineBattle(false) },
+                        onClick = { showBattleColorPicker = false; onEngineBattle(false, battleThinkSecs) },
                         shape = RoundedCornerShape(12.dp),
                         color = PrimaryBg,
                         border = androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFF5A1520)),
@@ -253,7 +284,7 @@ fun HomeScreen(
                             verticalArrangement = Arrangement.spacedBy(6.dp),
                         ) {
                             Text("R", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = Primary)
-                            Text("Ryzix 1000", fontSize = 11.sp, color = Primary, fontWeight = FontWeight.SemiBold)
+                            Text("Ryzix", fontSize = 11.sp, color = Primary, fontWeight = FontWeight.SemiBold)
                             Text("♔ plays White", fontSize = 10.sp, color = Primary.copy(alpha = 0.65f))
                         }
                     }

@@ -153,8 +153,8 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
                         vm.newGame(otbMode = true, playerIsWhite = true)
                         scope.launch { pagerState.animateScrollToPage(1) }
                     },
-                    onEngineBattle = { sfPlaysWhite ->
-                        vm.startAiVsAi(sfPlaysWhite)
+                    onEngineBattle = { sfPlaysWhite, thinkSecs ->
+                        vm.startAiVsAi(sfPlaysWhite, thinkSecs)
                         scope.launch { pagerState.animateScrollToPage(1) }
                     },
                 )
