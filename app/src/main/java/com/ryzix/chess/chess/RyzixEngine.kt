@@ -61,10 +61,13 @@ val RYZIX_1000_SETTINGS = EngineSettings(
     eloRating     = 1000,
 )
 
-class RyzixEngine(private val context: Context) {
+class RyzixEngine(
+    private val context: Context,
+    /** Native library filename to use as the UCI engine process (e.g. "libryzix.so" or "libstockfish.so") */
+    private val libName: String = "libryzix.so",
+) {
     companion object {
         private const val TAG = "RyzixEngine"
-        private const val LIB_NAME = "libryzix.so"
     }
 
     private var process: Process? = null
@@ -99,13 +102,13 @@ class RyzixEngine(private val context: Context) {
 
     private fun findBinary(): File? {
         val nativeDir = context.applicationInfo.nativeLibraryDir
-        val binary = File(nativeDir, LIB_NAME)
-        Log.d(TAG, "Looking for Ryzix engine at: ${binary.absolutePath}")
+        val binary = File(nativeDir, libName)
+        Log.d(TAG, "Looking for engine binary: ${binary.absolutePath}")
         return if (binary.exists() && binary.length() > 0L) {
-            Log.d(TAG, "Found Ryzix engine: ${binary.length()} bytes")
+            Log.d(TAG, "Found engine binary ($libName): ${binary.length()} bytes")
             binary
         } else {
-            Log.e(TAG, "Ryzix engine NOT found at $nativeDir")
+            Log.e(TAG, "Engine binary NOT found: $nativeDir/$libName")
             null
         }
     }

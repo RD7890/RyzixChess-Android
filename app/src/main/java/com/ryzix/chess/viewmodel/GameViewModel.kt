@@ -39,16 +39,13 @@ data class AppPrefs(
     val showArrows: Boolean = true,
 )
 
-// ── Game modes ─────────────────────────────────────────────────────────────────
 enum class GameMode { OTB, VS_ENGINE, AI_VS_AI }
 
-// OTB analysis model (same .so binary, different display label)
 enum class OtbAnalysisModel(val displayName: String) {
     RYZIX("Ryzix Engine"),
     STOCKFISH("Stockfish 16"),
 }
 
-// ── Move grade ─────────────────────────────────────────────────────────────────
 enum class MoveGrade(val label: String, val symbol: String, val colorHex: Long, val iconFilename: String) {
     BRILLIANT ("Brilliant",  "!!",  0xFF00BCD4, "brilliant.png"),
     BEST      ("Best Move",  "!",   0xFF4CAF50, "best.png"),
@@ -68,7 +65,6 @@ data class MoveGradeResult(
     val cpLoss: Float,
 )
 
-// ── Saved game ─────────────────────────────────────────────────────────────────
 data class SavedGame(
     val result: String,
     val moveCount: Int,
@@ -95,82 +91,82 @@ data class SavedGame(
     }
 }
 
-// ── AI vs AI thinking state ────────────────────────────────────────────────────
 data class AiVsAiState(
-    val sfPlaysWhite: Boolean = true,
+    val sfPlaysWhite: Boolean  = true,
     val whiteThinking: Boolean = false,
     val blackThinking: Boolean = false,
-    val whiteLabel: String = "Stockfish 16",
-    val blackLabel: String = "Ryzix 1000",
-    val isActive: Boolean = false,
+    val whiteLabel: String     = "Stockfish 16",
+    val blackLabel: String     = "Ryzix 1000",
+    val isActive: Boolean      = false,
 )
 
-// ── ViewModel ──────────────────────────────────────────────────────────────────
 class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     val chessGame = ChessGame()
     val gameState: StateFlow<GameState> = chessGame.state
 
-    // Main engine — used for OTB analysis and VS_ENGINE mode
-    private val engine = RyzixEngine(application)
+    // ── Engines ──────────────────────────────────────────────────────────────
+    // Main engine (libryzix.so) — OTB analysis + vs Ryzix mode
+    private val engine = RyzixEngine(application, "libryzix.so")
+
+    // AI vs AI: real Stockfish 16 binary vs libryzix.so at 1000 ELO
+    // Each spawns its own independent UCI process.
+    private val sfAiEngine    = RyzixEngine(application, "libstockfish.so")
+    private val ryzixAiEngine = RyzixEngine(application, "libryzix.so")
+
     private val soundManager = SoundManager(application)
-    private var engineReady = false
+    private var engineReady    = false
+    private var sfAiReady      = false
+    private var ryzixAiReady   = false
 
-    // AI vs AI engines — each spawns its own libryzix.so process
-    private val aiWhiteEngine = RyzixEngine(application)
-    private val aiBlackEngine = RyzixEngine(application)
-    private var aiWhiteReady = false
-    private var aiBlackReady = false
-
-    // ── Exposed state ────────────────────────────────────────────────────────
-
-    private val _engineEval = MutableStateFlow(0f)
+    // ── Exposed state ─────────────────────────────────────────────────────────
+    private val _engineEval      = MutableStateFlow(0f)
     val engineEval: StateFlow<Float> = _engineEval
 
     private val _isEngineThinking = MutableStateFlow(false)
     val isEngineThinking: StateFlow<Boolean> = _isEngineThinking
 
-    private val _engineEnabled = MutableStateFlow(true)
+    private val _engineEnabled   = MutableStateFlow(true)
     val engineEnabled: StateFlow<Boolean> = _engineEnabled
 
-    private val _analysisLines = MutableStateFlow<List<AnalysisLine>>(emptyList())
+    private val _analysisLines   = MutableStateFlow<List<AnalysisLine>>(emptyList())
     val analysisLines: StateFlow<List<AnalysisLine>> = _analysisLines
 
-    private val _lastMoveGrade = MutableStateFlow<MoveGradeResult?>(null)
+    private val _lastMoveGrade   = MutableStateFlow<MoveGradeResult?>(null)
     val lastMoveGrade: StateFlow<MoveGradeResult?> = _lastMoveGrade
 
     private val _engineAvailable = MutableStateFlow(false)
     val engineAvailable: StateFlow<Boolean> = _engineAvailable
 
-    private val _prefs = MutableStateFlow(AppPrefs())
+    private val _prefs           = MutableStateFlow(AppPrefs())
     val prefs: StateFlow<AppPrefs> = _prefs
 
     private val _promotionPending = MutableStateFlow<Pair<String, String>?>(null)
     val promotionPending: StateFlow<Pair<String, String>?> = _promotionPending
 
-    private val _isOtbMode = MutableStateFlow(true)
+    private val _isOtbMode       = MutableStateFlow(true)
     val isOtbMode: StateFlow<Boolean> = _isOtbMode
 
-    private val _playerIsWhite = MutableStateFlow(true)
+    private val _playerIsWhite   = MutableStateFlow(true)
     val playerIsWhite: StateFlow<Boolean> = _playerIsWhite
 
-    private val _gameHistory = MutableStateFlow<List<SavedGame>>(emptyList())
+    private val _gameHistory     = MutableStateFlow<List<SavedGame>>(emptyList())
     val gameHistory: StateFlow<List<SavedGame>> = _gameHistory
 
-    private val _isReviewMode = MutableStateFlow(false)
+    private val _isReviewMode    = MutableStateFlow(false)
     val isReviewMode: StateFlow<Boolean> = _isReviewMode
 
-    private val _gameMode = MutableStateFlow(GameMode.OTB)
+    private val _gameMode        = MutableStateFlow(GameMode.OTB)
     val gameMode: StateFlow<GameMode> = _gameMode
 
-    private val _aiVsAiState = MutableStateFlow(AiVsAiState())
+    private val _aiVsAiState     = MutableStateFlow(AiVsAiState())
     val aiVsAiState: StateFlow<AiVsAiState> = _aiVsAiState
 
     private val _otbAnalysisModel = MutableStateFlow(OtbAnalysisModel.RYZIX)
     val otbAnalysisModel: StateFlow<OtbAnalysisModel> = _otbAnalysisModel
 
-    @Volatile private var isGradingPending = false
-    @Volatile private var preMoveEval = 0f
+    @Volatile private var isGradingPending  = false
+    @Volatile private var preMoveEval       = 0f
     @Volatile private var preMoveLines: List<AnalysisLine> = emptyList()
     @Volatile private var engineMoveInFlight = false
     private var gameInitialized = false
@@ -183,18 +179,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         collectAiVsAiOutput()
     }
 
-    // ── Prefs & init ────────────────────────────────────────────────────────
-
+    // ── Prefs ─────────────────────────────────────────────────────────────────
     private fun loadPrefs() {
         viewModelScope.launch {
             getApplication<Application>().dataStore.data.collect { data ->
                 _prefs.value = AppPrefs(
-                    levelIndex   = data[PrefKeys.LEVEL] ?: 3,
-                    searchTimeMs = data[PrefKeys.SEARCH_TIME] ?: 3000,
-                    multiPv      = data[PrefKeys.MULTI_PV] ?: 3,
-                    threads      = data[PrefKeys.THREADS] ?: 1,
+                    levelIndex   = data[PrefKeys.LEVEL]         ?: 3,
+                    searchTimeMs = data[PrefKeys.SEARCH_TIME]   ?: 3000,
+                    multiPv      = data[PrefKeys.MULTI_PV]      ?: 3,
+                    threads      = data[PrefKeys.THREADS]        ?: 1,
                     playAsWhite  = (data[PrefKeys.PLAY_AS_WHITE] ?: 1) == 1,
-                    showArrows   = (data[PrefKeys.SHOW_ARROWS] ?: 1) == 1,
+                    showArrows   = (data[PrefKeys.SHOW_ARROWS]   ?: 1) == 1,
                 )
                 val raw = data[PrefKeys.GAME_HISTORY] ?: ""
                 _gameHistory.value = raw.split("\n").filter { it.isNotBlank() }
@@ -221,29 +216,22 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // ── Main engine output collector ────────────────────────────────────────
-
+    // ── Main engine collector (OTB + VS_ENGINE) ───────────────────────────────
     private fun collectMainEngineOutput() {
         viewModelScope.launch {
             engine.bestMoveFlow.collect { bestMove ->
-                // Ignore in AI vs AI mode — those engines have their own collectors
                 if (_gameMode.value == GameMode.AI_VS_AI) return@collect
 
                 _isEngineThinking.value = false
                 engineMoveInFlight = false
 
-                // Arrows only in OTB
                 if (_isOtbMode.value && _engineEnabled.value && _prefs.value.showArrows && _analysisLines.value.isNotEmpty()) {
                     updateArrows(_analysisLines.value)
                 }
-
-                // Move grading only in OTB
                 if (_isOtbMode.value && isGradingPending && _analysisLines.value.isNotEmpty()) {
                     isGradingPending = false
                     gradeLastMove(_analysisLines.value.firstOrNull()?.eval ?: _engineEval.value)
                 }
-
-                // VS_ENGINE: engine plays its turn automatically
                 if (!_isOtbMode.value && _gameMode.value == GameMode.VS_ENGINE && !gameState.value.isGameOver) {
                     val isEngineTurn = if (_playerIsWhite.value) !gameState.value.isWhiteTurn
                                        else gameState.value.isWhiteTurn
@@ -259,28 +247,40 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
         }
-        viewModelScope.launch { engine.evalFlow.collect     { _engineEval.value     = it } }
-        viewModelScope.launch { engine.analysisFlow.collect { _analysisLines.value  = it } }
+        viewModelScope.launch { engine.evalFlow.collect     { _engineEval.value    = it } }
+        viewModelScope.launch { engine.analysisFlow.collect { _analysisLines.value = it } }
     }
 
-    // ── AI vs AI engine output collectors ──────────────────────────────────
+    // ── AI vs AI collectors ───────────────────────────────────────────────────
+    // sfAiEngine  → real Stockfish 16 (libstockfish.so)
+    // ryzixAiEngine → libryzix.so at 1000 ELO
 
     private fun collectAiVsAiOutput() {
-        // White engine collector
+        // Stockfish 16 engine — handles moves when it's SF's turn
         viewModelScope.launch {
-            aiWhiteEngine.bestMoveFlow.collect { bestMove ->
+            sfAiEngine.bestMoveFlow.collect { bestMove ->
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
-                if (!gameState.value.isWhiteTurn || gameState.value.isGameOver) return@collect
-                _aiVsAiState.value = _aiVsAiState.value.copy(whiteThinking = false)
+                val isSfTurn = (gameState.value.isWhiteTurn == _aiVsAiState.value.sfPlaysWhite)
+                if (!isSfTurn || gameState.value.isGameOver) return@collect
+                val isWhite = gameState.value.isWhiteTurn
+                _aiVsAiState.value = _aiVsAiState.value.copy(
+                    whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
+                    blackThinking = if (!isWhite) false else _aiVsAiState.value.blackThinking,
+                )
                 handleAiVsAiMove(bestMove)
             }
         }
-        // Black engine collector
+        // Ryzix 1000 ELO engine — handles moves when it's Ryzix's turn
         viewModelScope.launch {
-            aiBlackEngine.bestMoveFlow.collect { bestMove ->
+            ryzixAiEngine.bestMoveFlow.collect { bestMove ->
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
-                if (gameState.value.isWhiteTurn || gameState.value.isGameOver) return@collect
-                _aiVsAiState.value = _aiVsAiState.value.copy(blackThinking = false)
+                val isRyzixTurn = (gameState.value.isWhiteTurn != _aiVsAiState.value.sfPlaysWhite)
+                if (!isRyzixTurn || gameState.value.isGameOver) return@collect
+                val isWhite = gameState.value.isWhiteTurn
+                _aiVsAiState.value = _aiVsAiState.value.copy(
+                    whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
+                    blackThinking = if (!isWhite) false else _aiVsAiState.value.blackThinking,
+                )
                 handleAiVsAiMove(bestMove)
             }
         }
@@ -308,9 +308,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val isSfTurn     = (isWhiteTurn == sfPlaysWhite)
 
         viewModelScope.launch {
-            // Humanoid think delays:
-            // Stockfish 16 — 0.8-2.5s  (strong, deliberate)
-            // Ryzix 1000  — 2.0-5.0s  (human-like, slower, uncertain)
+            // Humanoid think delays
+            // Stockfish 16 — 0.8–2.5s (strong, deliberate)
+            // Ryzix 1000   — 2.0–5.0s (human-like, slower, more uncertain)
             val delayMs = if (isSfTurn) (800L..2500L).random() else (2000L..5000L).random()
 
             _aiVsAiState.value = _aiVsAiState.value.copy(
@@ -320,34 +320,35 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             delay(delayMs)
 
             if (_gameMode.value != GameMode.AI_VS_AI || gameState.value.isGameOver) {
-                _aiVsAiState.value = _aiVsAiState.value.copy(whiteThinking = false, blackThinking = false)
+                _aiVsAiState.value = _aiVsAiState.value.copy(
+                    whiteThinking = false, blackThinking = false)
                 return@launch
             }
 
             val fen      = chessGame.getCurrentFen()
             val settings = if (isSfTurn) SF_BATTLE_SETTINGS else RYZIX_1000_SETTINGS
-            val aiEngine = if (isWhiteTurn) aiWhiteEngine else aiBlackEngine
+            // Route to the correct binary
+            val aiEngine = if (isSfTurn) sfAiEngine else ryzixAiEngine
             aiEngine.applySettings(settings)
             aiEngine.startSearch(fen, settings)
         }
     }
 
-    // ── AI vs AI: start ─────────────────────────────────────────────────────
-
+    // ── Start AI vs AI ────────────────────────────────────────────────────────
     fun startAiVsAi(sfPlaysWhite: Boolean) {
         engine.stop()
-        aiWhiteEngine.stop()
-        aiBlackEngine.stop()
-        _isEngineThinking.value = false
-        engineMoveInFlight = false
-        _engineEval.value = 0f
-        _analysisLines.value = emptyList()
-        _lastMoveGrade.value = null
-        _promotionPending.value = null
-        _isReviewMode.value = false
-        _isOtbMode.value = false
-        _gameMode.value = GameMode.AI_VS_AI
-        isGradingPending = false
+        sfAiEngine.stop()
+        ryzixAiEngine.stop()
+        _isEngineThinking.value  = false
+        engineMoveInFlight       = false
+        _engineEval.value        = 0f
+        _analysisLines.value     = emptyList()
+        _lastMoveGrade.value     = null
+        _promotionPending.value  = null
+        _isReviewMode.value      = false
+        _isOtbMode.value         = false
+        _gameMode.value          = GameMode.AI_VS_AI
+        isGradingPending         = false
         gradeCache.clear()
         chessGame.reset()
         chessGame.clearArrows()
@@ -369,22 +370,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
 
         viewModelScope.launch {
-            // Lazily init AI engines (each spawns its own libryzix.so process)
-            if (!aiWhiteReady) { aiWhiteReady = aiWhiteEngine.init(); delay(300) }
-            if (!aiBlackReady) { aiBlackReady = aiBlackEngine.init(); delay(300) }
-            if (!aiWhiteReady || !aiBlackReady) return@launch
+            // Lazily init each engine — each spawns its own libryzix.so / libstockfish.so process
+            if (!sfAiReady)    { sfAiReady    = sfAiEngine.init();    delay(400) }
+            if (!ryzixAiReady) { ryzixAiReady = ryzixAiEngine.init(); delay(400) }
+            if (!sfAiReady || !ryzixAiReady) return@launch
             delay(600)
-            // White always starts
             scheduleNextAiMove()
         }
     }
 
     fun stopAiVsAi() {
-        aiWhiteEngine.stop()
-        aiBlackEngine.stop()
+        sfAiEngine.stop()
+        ryzixAiEngine.stop()
         _aiVsAiState.value = _aiVsAiState.value.copy(
-            whiteThinking = false, blackThinking = false, isActive = false,
-        )
+            whiteThinking = false, blackThinking = false, isActive = false)
     }
 
     fun resumeAiVsAi() {
@@ -393,22 +392,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         scheduleNextAiMove()
     }
 
-    // ── OTB analysis model ───────────────────────────────────────────────────
-
-    fun setOtbAnalysisModel(model: OtbAnalysisModel) {
-        _otbAnalysisModel.value = model
-    }
+    // ── OTB model ─────────────────────────────────────────────────────────────
+    fun setOtbAnalysisModel(model: OtbAnalysisModel) { _otbAnalysisModel.value = model }
 
     // ── Move grading ──────────────────────────────────────────────────────────
-
     private fun gradeLastMove(postEval: Float) {
         val fen = chessGame.getCurrentFen()
         gradeCache[fen]?.let { _lastMoveGrade.value = it; return }
-        val cpLoss = preMoveEval + postEval
-        val preBestUci = preMoveLines.firstOrNull()?.move ?: ""
-        val lastMove = gameState.value.moves.lastOrNull()
-        val playedUci = if (lastMove != null) "${lastMove.from}${lastMove.to}" else ""
-        val isBestMove = playedUci.take(4) == preBestUci.take(4)
+        val cpLoss      = preMoveEval + postEval
+        val preBestUci  = preMoveLines.firstOrNull()?.move ?: ""
+        val lastMove    = gameState.value.moves.lastOrNull()
+        val playedUci   = if (lastMove != null) "${lastMove.from}${lastMove.to}" else ""
+        val isBestMove  = playedUci.take(4) == preBestUci.take(4)
         val grade = when {
             cpLoss <= 0.05f && isBestMove -> MoveGrade.BEST
             cpLoss <= 0.05f              -> MoveGrade.BRILLIANT
@@ -435,17 +430,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun runAnalysis() {
         if (!engineReady || !_engineEnabled.value) return
-        val base = STOCKFISH_LEVELS.getOrElse(_prefs.value.levelIndex) { STOCKFISH_LEVELS[3] }
+        val base     = STOCKFISH_LEVELS.getOrElse(_prefs.value.levelIndex) { STOCKFISH_LEVELS[3] }
         val settings = base.copy(multiPv = maxOf(3, _prefs.value.multiPv), searchTimeMs = maxOf(3000, base.searchTimeMs))
         engine.applySettings(settings)
         _isEngineThinking.value = true
         engine.startAnalysis(chessGame.getCurrentFen(), settings)
     }
 
-    // ── Square tap (OTB + VS_ENGINE only) ────────────────────────────────────
-
+    // ── Board interaction (OTB + VS_ENGINE only) ──────────────────────────────
     fun onSquareTap(square: String) {
-        if (_gameMode.value == GameMode.AI_VS_AI) return  // spectator — no interaction during AI battle
+        if (_gameMode.value == GameMode.AI_VS_AI) return
         val state = gameState.value
         if (state.isGameOver || _isReviewMode.value) return
         if (!_isOtbMode.value) {
@@ -522,14 +516,17 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun toggleEngine() {
         _engineEnabled.value = !_engineEnabled.value
         if (_engineEnabled.value) runAnalysis()
-        else { engine.stop(); _isEngineThinking.value = false; _analysisLines.value = emptyList(); chessGame.clearArrows() }
+        else {
+            engine.stop()
+            _isEngineThinking.value = false
+            _analysisLines.value = emptyList()
+            chessGame.clearArrows()
+        }
     }
 
     // ── New game (OTB / VS_ENGINE) ────────────────────────────────────────────
-
     fun newGame(otbMode: Boolean = true, playerIsWhite: Boolean = true) {
-        // Stop AI engines if they were running
-        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+        if (_gameMode.value == GameMode.AI_VS_AI) { sfAiEngine.stop(); ryzixAiEngine.stop() }
         engine.stop()
         _isEngineThinking.value = false
         engineMoveInFlight = false
@@ -552,8 +549,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             delay(400)
-            if (otbMode) runAnalysis()
-            else if (!playerIsWhite) triggerEngineMove()
+            if (otbMode) runAnalysis() else if (!playerIsWhite) triggerEngineMove()
         }
     }
 
@@ -582,20 +578,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun flipBoard() { chessGame.flipBoard() }
 
     // ── History ───────────────────────────────────────────────────────────────
-
     fun loadGameFromHistory(game: SavedGame) {
-        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+        if (_gameMode.value == GameMode.AI_VS_AI) { sfAiEngine.stop(); ryzixAiEngine.stop() }
         engine.stop(); _isEngineThinking.value = false
         _analysisLines.value = emptyList(); _lastMoveGrade.value = null
         _promotionPending.value = null; _isReviewMode.value = true
-        _isOtbMode.value = true; _gameMode.value = GameMode.OTB
-        _aiVsAiState.value = AiVsAiState()
+        _isOtbMode.value = true; _gameMode.value = GameMode.OTB; _aiVsAiState.value = AiVsAiState()
         if (game.movesUci.isNotBlank()) chessGame.loadFromMoves(game.movesUci) else chessGame.reset()
         viewModelScope.launch { delay(200); if (_engineEnabled.value) runAnalysis() }
     }
 
     fun continueGameFromHistory(game: SavedGame) {
-        if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+        if (_gameMode.value == GameMode.AI_VS_AI) { sfAiEngine.stop(); ryzixAiEngine.stop() }
         engine.stop(); _isEngineThinking.value = false
         _analysisLines.value = emptyList(); _lastMoveGrade.value = null
         _promotionPending.value = null; _isReviewMode.value = false
@@ -615,12 +609,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun loadGameFromPgn(pgn: String): Boolean {
         val ok = chessGame.loadFromPgn(pgn)
         if (ok) {
-            if (_gameMode.value == GameMode.AI_VS_AI) { aiWhiteEngine.stop(); aiBlackEngine.stop() }
+            if (_gameMode.value == GameMode.AI_VS_AI) { sfAiEngine.stop(); ryzixAiEngine.stop() }
             engine.stop(); _isEngineThinking.value = false
             _analysisLines.value = emptyList(); _lastMoveGrade.value = null
             _promotionPending.value = null; _isReviewMode.value = true
-            _isOtbMode.value = true; _gameMode.value = GameMode.OTB
-            _aiVsAiState.value = AiVsAiState()
+            _isOtbMode.value = true; _gameMode.value = GameMode.OTB; _aiVsAiState.value = AiVsAiState()
             viewModelScope.launch { delay(200); if (_engineEnabled.value) runAnalysis() }
         }
         return ok
@@ -646,31 +639,37 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun saveGameInProgress() {
         val movesUci = chessGame.getMovesAsUci()
         if (movesUci.isBlank()) return
-        val s = gameState.value
+        val s    = gameState.value
         val game = SavedGame("*", s.moves.size, System.currentTimeMillis(), movesUci)
         viewModelScope.launch {
             val current = _gameHistory.value.toMutableList()
             current.removeAll { it.result == "*" }; current.add(0, game)
             val kept = current.take(50); _gameHistory.value = kept
-            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() } }
+            getApplication<Application>().dataStore.edit {
+                it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() }
+            }
         }
     }
 
     private fun saveCurrentGame() {
         val movesUci = chessGame.getMovesAsUci()
-        val s = gameState.value
+        val s    = gameState.value
         val game = SavedGame(s.gameResult ?: "*", s.moves.size, System.currentTimeMillis(), movesUci)
         viewModelScope.launch {
             val current = _gameHistory.value.toMutableList()
             current.removeAll { it.result == "*" }; current.add(0, game)
             val kept = current.take(50); _gameHistory.value = kept
-            getApplication<Application>().dataStore.edit { it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() } }
+            getApplication<Application>().dataStore.edit {
+                it[PrefKeys.GAME_HISTORY] = kept.joinToString("\n") { g -> g.toRecord() }
+            }
         }
     }
 
     private fun persistCurrentGame() {
         viewModelScope.launch {
-            getApplication<Application>().dataStore.edit { it[PrefKeys.CURRENT_GAME_MOVES] = chessGame.getMovesAsUci() }
+            getApplication<Application>().dataStore.edit {
+                it[PrefKeys.CURRENT_GAME_MOVES] = chessGame.getMovesAsUci()
+            }
         }
     }
 
@@ -686,8 +685,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         engine.quit()
-        aiWhiteEngine.quit()
-        aiBlackEngine.quit()
+        sfAiEngine.quit()
+        ryzixAiEngine.quit()
         soundManager.release()
     }
 }

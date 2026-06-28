@@ -39,7 +39,7 @@ jobs:
           curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT_ID}" \
             -d parse_mode="Markdown" \
-            -d text="$(printf '🔨 *Ryzix Chess v1.0 — Build Started*\n\n📌 Branch: `%s`\n🔢 Build: #%s\n📝 Commit: `%s`\n\n⚡ Downloading Ryzix Engine + assembling APK...' \
+            -d text="$(printf '🔨 *Ryzix Chess v1.0 — Build Started*\n\n📌 Branch: `%s`\n🔢 Build: #%s\n📝 Commit: `%s`\n\n⚡ Downloading Ryzix Engine + Stockfish 16 + assembling APK...' \
               '${{ github.ref_name }}' '${{ github.run_number }}' "$SHORT_SHA")"
 
       # ── 2. Checkout ──────────────────────────────────────────────────────
@@ -108,17 +108,104 @@ jobs:
             echo "Compiled: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
           fi
 
-      # ── 6. Verify engine ─────────────────────────────────────────────────
-      - name: Verify Ryzix Engine binary
+      # ── 6. Download Stockfish 16 ARM64 (libstockfish.so) ─────────────────
+      - name: Download Stockfish 16
         run: |
-          [ -f app/src/main/jniLibs/arm64-v8a/libryzix.so ] || { echo "FATAL: Missing libryzix.so"; exit 1; }
-          echo "OK: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
-          file app/src/main/jniLibs/arm64-v8a/libryzix.so || true
+          set -e
+          mkdir -p app/src/main/jniLibs/arm64-v8a
 
-      # ── 7. Signing keystore ───────────────────────────────────────────────
-      # Uses the committed signing/signing-key.jks for a permanent signature
-      # (no reinstall needed on updates). Falls back to SIGNING_KEYSTORE_B64
-      # secret if the file is somehow missing from the repo.
+          echo "Fetching Stockfish 16 release assets..."
+          SF_RELEASE=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/official-stockfish/Stockfish/releases/tags/sf_16")
+
+          # Pick the Android ARM64 asset (zip or direct binary)
+          ASSET_URL=$(echo "$SF_RELEASE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              name = a['name'].lower()
+              if 'android' in name and ('armv8' in name or 'arm64' in name):
+                  print(a['browser_download_url'])
+                  break
+          " 2>/dev/null || echo "")
+
+          if [ -z "$ASSET_URL" ]; then
+            echo "No Android asset in sf_16 release — checking latest release..."
+            SF_RELEASE=$(curl -s \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/official-stockfish/Stockfish/releases/latest")
+            ASSET_URL=$(echo "$SF_RELEASE" | python3 -c "
+          import sys, json
+          data = json.load(sys.stdin)
+          for a in data.get('assets', []):
+              name = a['name'].lower()
+              if 'android' in name and ('armv8' in name or 'arm64' in name):
+                  print(a['browser_download_url'])
+                  break
+          " 2>/dev/null || echo "")
+          fi
+
+          if [ -n "$ASSET_URL" ]; then
+            echo "Downloading Stockfish from: $ASSET_URL"
+            curl -fsSL "$ASSET_URL" -L -o /tmp/sf_download
+
+            # Check if it's a zip
+            if file /tmp/sf_download | grep -qi zip; then
+              echo "Extracting zip..."
+              cd /tmp && unzip -o sf_download -d sf_extracted
+              SF_BIN=$(find /tmp/sf_extracted -type f \( -name "stockfish*" -o -name "sf*" \) ! -name "*.zip" | head -1)
+            else
+              SF_BIN=/tmp/sf_download
+            fi
+
+            if [ -n "$SF_BIN" ] && [ -f "$SF_BIN" ]; then
+              cp "$SF_BIN" app/src/main/jniLibs/arm64-v8a/libstockfish.so
+              chmod +x app/src/main/jniLibs/arm64-v8a/libstockfish.so || true
+              echo "Stockfish ready: $(wc -c < app/src/main/jniLibs/arm64-v8a/libstockfish.so) bytes"
+            else
+              echo "FATAL: could not locate Stockfish binary in download"; exit 1
+            fi
+          else
+            # Fallback: build Stockfish from source using NDK
+            echo "No prebuilt asset found — compiling Stockfish 16 from source..."
+            sudo apt-get install -y --no-install-recommends build-essential
+
+            # Reuse NDK if already downloaded for Ryzix, otherwise fetch it
+            NDK_VERSION="r25c"
+            NDK_PATH="/tmp/ndk/android-ndk-${NDK_VERSION}"
+            if [ ! -d "$NDK_PATH" ]; then
+              curl -fsSL "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip" \
+                -o /tmp/ndk.zip
+              unzip -q /tmp/ndk.zip -d /tmp/ndk
+            fi
+            CXX="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang++"
+
+            curl -fsSL "https://github.com/official-stockfish/Stockfish/archive/refs/tags/sf_16.tar.gz" \
+              | tar -xz -C /tmp
+            cd /tmp/Stockfish-sf_16/src
+            # Build for Android ARM64
+            make build ARCH=armv8 COMP=clang CXX="$CXX" \
+              CXXFLAGS="-O3 -DNDEBUG -static-libstdc++" 2>&1 | tail -20
+            cp stockfish /home/runner/work/RyzixChess-Android/RyzixChess-Android/app/src/main/jniLibs/arm64-v8a/libstockfish.so
+            echo "Compiled Stockfish: $(wc -c < /home/runner/work/RyzixChess-Android/RyzixChess-Android/app/src/main/jniLibs/arm64-v8a/libstockfish.so) bytes"
+          fi
+
+      # ── 7. Verify engine binaries ─────────────────────────────────────────
+      - name: Verify engine binaries
+        run: |
+          echo "=== Engine binaries ==="
+          for lib in libryzix.so libstockfish.so; do
+            path="app/src/main/jniLibs/arm64-v8a/$lib"
+            if [ -f "$path" ]; then
+              echo "✅ $lib: $(wc -c < $path) bytes"
+              file "$path" || true
+            else
+              echo "❌ MISSING: $lib"; exit 1
+            fi
+          done
+
+      # ── 8. Signing keystore ───────────────────────────────────────────────
       - name: Restore signing keystore
         run: |
           mkdir -p signing
@@ -129,7 +216,7 @@ jobs:
             echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > signing/signing-key.jks
             echo "Keystore restored: $(wc -c < signing/signing-key.jks) bytes"
           else
-            echo "⚠️  No keystore found — generating fresh one (updates will require reinstall)"
+            echo "⚠️  No keystore found — generating fresh one"
             keytool -genkeypair \
               -alias RyzixChess -keypass 123456 \
               -keystore signing/signing-key.jks \
@@ -138,23 +225,23 @@ jobs:
               -keyalg RSA -keysize 2048 -validity 10000 -noprompt
           fi
 
-      # ── 8. local.properties ───────────────────────────────────────────────
+      # ── 9. local.properties ───────────────────────────────────────────────
       - name: Create local.properties
         run: |
           printf 'signing.storeFile=signing/signing-key.jks\nsigning.storePassword=123456\nsigning.keyAlias=RyzixChess\nsigning.keyPassword=123456\n' \
             > local.properties
 
-      # ── 9. chmod gradlew ─────────────────────────────────────────────────
+      # ── 10. chmod gradlew ─────────────────────────────────────────────────
       - name: chmod gradlew
         run: chmod +x ./gradlew
 
-      # ── 10. Assemble Release APK ──────────────────────────────────────────
+      # ── 11. Assemble Release APK ──────────────────────────────────────────
       - name: Assemble Release APK
         run: |
           set -o pipefail
           ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
 
-      # ── 11. Get version ───────────────────────────────────────────────────
+      # ── 12. Get version ───────────────────────────────────────────────────
       - name: Get version info
         id: version
         run: |
@@ -163,13 +250,13 @@ jobs:
           echo "name=$VER" >> $GITHUB_OUTPUT
           echo "apk_name=RyzixChess-v${VER}-b${BUILD}.apk" >> $GITHUB_OUTPUT
 
-      # ── 12. Rename APK ────────────────────────────────────────────────────
+      # ── 13. Rename APK ────────────────────────────────────────────────────
       - name: Rename APK
         run: |
           APK=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
           cp "$APK" "app/build/outputs/apk/release/${{ steps.version.outputs.apk_name }}"
 
-      # ── 13. Upload artifact ───────────────────────────────────────────────
+      # ── 14. Upload artifact ───────────────────────────────────────────────
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -177,7 +264,7 @@ jobs:
           path: app/build/outputs/apk/release/RyzixChess-*.apk
           retention-days: 30
 
-      # ── 14. GitHub Release ────────────────────────────────────────────────
+      # ── 15. GitHub Release ────────────────────────────────────────────────
       - name: Create GitHub Release
         if: >
           (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
@@ -191,14 +278,13 @@ jobs:
 
             Branch: `${{ github.ref_name }}` | Commit: `${{ github.sha }}`
             Package: `com.ryzix.chess`
-            Engine: **Ryzix Engine** (ARM64 native)
+            Engines: **Ryzix Engine** + **Stockfish 16** (both ARM64 native)
 
-            **Fixes in this build:**
-            - Ryzix Engine plays automatically in vs Ryzix mode
-            - No arrows/hints shown in vs Ryzix mode (OTB only)
-            - Engine renamed from Stockfish to Ryzix Engine
-            - Permanent signing key — updates install without uninstall
-            - New game dialog with vs Ryzix / OTB mode selection
+            **What's new:**
+            - Engine Battle mode: real Stockfish 16 binary vs Ryzix 1000 ELO
+            - Two separate engine processes — independent UCI sessions
+            - Humanoid delays, UCI_LimitStrength+UCI_Elo=1000 for Ryzix side
+            - OTB model selector (Ryzix Engine / Stockfish 16 label in analysis)
 
             **Install:** Download APK → enable "Install from unknown sources" → install.
           draft: false
@@ -207,19 +293,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ── 15. Telegram — SUCCESS ────────────────────────────────────────────
+      # ── 16. Telegram — SUCCESS ────────────────────────────────────────────
       - name: Telegram — Success
         if: success()
         run: |
           RELEASE_URL="https://github.com/RD7890/RyzixChess-Android/releases/tag/v${{ steps.version.outputs.name }}-build.${{ github.run_number }}"
           ARTIFACT_URL="https://github.com/RD7890/RyzixChess-Android/actions/runs/${{ github.run_id }}"
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          # Get APK size
+          APK_SIZE=$(du -sh app/build/outputs/apk/release/*.apk 2>/dev/null | awk '{print $1}' | head -1 || echo "?")
           curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT_ID}" \
             -d parse_mode="Markdown" \
-            -d text="$(printf '✅ *Ryzix Chess v%s Build #%s — SUCCESS*\n\n📦 APK: `%s`\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n⚙️ Engine: Ryzix (ARM64)\n\n🔗 *Download APK:*\n[GitHub Release](%s)\n[Build Artifacts](%s)' \
+            -d text="$(printf '✅ *Ryzix Chess v%s Build #%s — SUCCESS*\n\n📦 APK: `%s` (%s)\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n⚙️ Engines: Ryzix (ARM64) + Stockfish 16 (ARM64)\n\n🔗 *Download APK:*\n[GitHub Release](%s)\n[Build Artifacts](%s)' \
               '${{ steps.version.outputs.name }}' '${{ github.run_number }}' \
-              '${{ steps.version.outputs.apk_name }}' \
+              '${{ steps.version.outputs.apk_name }}' "$APK_SIZE" \
               '${{ github.ref_name }}' "$SHORT_SHA" \
               "$RELEASE_URL" "$ARTIFACT_URL")"
           tail -200 build.log > build_summary.log
@@ -228,7 +316,7 @@ jobs:
             -F document=@build_summary.log \
             -F caption="📋 Ryzix Chess Build #${{ github.run_number }} — last 200 lines"
 
-      # ── 16. Telegram — FAILURE ────────────────────────────────────────────
+      # ── 17. Telegram — FAILURE ────────────────────────────────────────────
       - name: Telegram — Failure
         if: failure()
         run: |
