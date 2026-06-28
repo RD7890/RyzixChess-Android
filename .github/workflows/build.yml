@@ -67,8 +67,6 @@ jobs:
             ${{ runner.os }}-gradle-
 
       # ── 5. Download Ryzix Engine (libryzix.so) ───────────────────────────
-      # Downloads pre-compiled ARM64 engine from RD7890/Ryzix latest release.
-      # Falls back to compiling from source if no release exists.
       - name: Download Ryzix Engine
         run: |
           set -e
@@ -118,25 +116,26 @@ jobs:
           file app/src/main/jniLibs/arm64-v8a/libryzix.so || true
 
       # ── 7. Signing keystore ───────────────────────────────────────────────
-      - name: Restore / generate signing keystore
+      # Uses the committed signing/signing-key.jks for a permanent signature
+      # (no reinstall needed on updates). Falls back to SIGNING_KEYSTORE_B64
+      # secret if the file is somehow missing from the repo.
+      - name: Restore signing keystore
         run: |
           mkdir -p signing
-          if [ -n "${{ secrets.SIGNING_KEYSTORE_B64 }}" ]; then
-            echo "Using stored keystore from SIGNING_KEYSTORE_B64 secret"
+          if [ -f signing/signing-key.jks ]; then
+            echo "Using committed keystore: $(wc -c < signing/signing-key.jks) bytes"
+          elif [ -n "${{ secrets.SIGNING_KEYSTORE_B64 }}" ]; then
+            echo "Using SIGNING_KEYSTORE_B64 secret"
             echo "${{ secrets.SIGNING_KEYSTORE_B64 }}" | base64 -d > signing/signing-key.jks
             echo "Keystore restored: $(wc -c < signing/signing-key.jks) bytes"
           else
-            echo "⚠️  No SIGNING_KEYSTORE_B64 secret — generating fresh keystore."
-            echo "   Save the base64 block below as GitHub secret SIGNING_KEYSTORE_B64"
+            echo "⚠️  No keystore found — generating fresh one (updates will require reinstall)"
             keytool -genkeypair \
               -alias RyzixChess -keypass 123456 \
               -keystore signing/signing-key.jks \
               -storepass 123456 \
               -dname "CN=RyzixChess,OU=Dev,O=RDChess,L=India,S=India,C=IN" \
               -keyalg RSA -keysize 2048 -validity 10000 -noprompt
-            echo "=== COPY THIS AS SIGNING_KEYSTORE_B64 SECRET ==="
-            base64 signing/signing-key.jks
-            echo "=================================================="
           fi
 
       # ── 8. local.properties ───────────────────────────────────────────────
@@ -192,16 +191,14 @@ jobs:
 
             Branch: `${{ github.ref_name }}` | Commit: `${{ github.sha }}`
             Package: `com.ryzix.chess`
-            Engine: **Ryzix Engine** (~200 ELO, ARM64 native)
+            Engine: **Ryzix Engine** (ARM64 native)
 
-            **Features:**
-            - Play vs Ryzix Engine (~200 ELO — ideal for beginners)
-            - OTB (Over The Board) — two players, one device
-            - Full chess rules: castling, en-passant, pawn promotion
-            - Game history with PGN export
-            - Dark premium UI, time controls (1/3/5/10 min)
-            - Engine level selector (adjusts think time)
-            - King flashes red on check, solid red on checkmate
+            **Fixes in this build:**
+            - Ryzix Engine plays automatically in vs Ryzix mode
+            - No arrows/hints shown in vs Ryzix mode (OTB only)
+            - Engine renamed from Stockfish to Ryzix Engine
+            - Permanent signing key — updates install without uninstall
+            - New game dialog with vs Ryzix / OTB mode selection
 
             **Install:** Download APK → enable "Install from unknown sources" → install.
           draft: false
@@ -214,13 +211,13 @@ jobs:
       - name: Telegram — Success
         if: success()
         run: |
-          RELEASE_URL="https://github.com/RD7890/RyzixChess-Android/releases"
+          RELEASE_URL="https://github.com/RD7890/RyzixChess-Android/releases/tag/v${{ steps.version.outputs.name }}-build.${{ github.run_number }}"
           ARTIFACT_URL="https://github.com/RD7890/RyzixChess-Android/actions/runs/${{ github.run_id }}"
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
             -d chat_id="${TG_CHAT_ID}" \
             -d parse_mode="Markdown" \
-            -d text="$(printf '✅ *Ryzix Chess v%s Build #%s — SUCCESS*\n\n📦 APK: `%s`\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n⚙️ Engine: Ryzix (~200 ELO, ARM64)\n\n🔗 *Download APK:*\n[GitHub Release](%s)\n[Build Artifacts](%s)' \
+            -d text="$(printf '✅ *Ryzix Chess v%s Build #%s — SUCCESS*\n\n📦 APK: `%s`\n🌿 Branch: `%s`\n🔖 Commit: `%s`\n⚙️ Engine: Ryzix (ARM64)\n\n🔗 *Download APK:*\n[GitHub Release](%s)\n[Build Artifacts](%s)' \
               '${{ steps.version.outputs.name }}' '${{ github.run_number }}' \
               '${{ steps.version.outputs.apk_name }}' \
               '${{ github.ref_name }}' "$SHORT_SHA" \

@@ -27,11 +27,11 @@ private val PrimaryDark = Color(0xFFC01D30)
 private val PrimaryBg = Color(0xFF1E0A0B)
 private val Border = Color(0xFF3C3C3C)
 private val Muted = Color(0xFF888888)
-private val Muted2 = Color(0xFF333333)
 
 @Composable
 fun HomeScreen(
-    onPlayVsComputer: () -> Unit,
+    onPlayVsRyzix: (playerIsWhite: Boolean) -> Unit,
+    onPlayOtb: () -> Unit = {},
 ) {
     var selectedTime by remember { mutableStateOf("5+0") }
     var selectedTimeSub by remember { mutableStateOf("5 min · Blitz") }
@@ -107,7 +107,7 @@ fun HomeScreen(
             }
             Spacer(Modifier.height(16.dp))
             Button(
-                onClick = onPlayVsComputer,
+                onClick = { onPlayVsRyzix(true) },
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Primary),
@@ -156,14 +156,14 @@ fun HomeScreen(
             ModeRow(
                 icon = Icons.Rounded.SmartToy,
                 iconBg = PrimaryBg, iconTint = Primary, iconBorderColor = Color(0xFF5A1520),
-                title = "vs Ryzix", sub = "Play vs Ryzix Engine",
-                onClick = onPlayVsComputer,
+                title = "vs Ryzix", sub = "Play vs Ryzix Engine — no hints",
+                onClick = { onPlayVsRyzix(true) },
             )
             ModeRow(
                 icon = Icons.Rounded.People,
                 iconBg = Surf2, iconTint = Muted, iconBorderColor = Border,
-                title = "Two Players", sub = "Pass & play on one device",
-                onClick = {},
+                title = "Two Players", sub = "Pass & play — engine shows hints",
+                onClick = onPlayOtb,
             )
             ModeRow(
                 icon = Icons.Rounded.Extension,

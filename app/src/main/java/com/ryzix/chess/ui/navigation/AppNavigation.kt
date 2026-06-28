@@ -74,21 +74,17 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
     val scope      = rememberCoroutineScope()
     val vm: GameViewModel = viewModel()
 
-    // Fullscreen state — hides the bottom nav bar while on the Play page (index 1)
     var isFullscreen by remember { mutableStateOf(false) }
 
-    // Reset fullscreen whenever the user navigates away from the Play page
     val onPlayPage = pagerState.currentPage == 1
     if (!onPlayPage && isFullscreen) isFullscreen = false
 
-    // Mid-game save prompt — shown when user tries to leave the Play page with a game running
     var showSavePrompt  by remember { mutableStateOf(false) }
     var pendingPage     by remember { mutableIntStateOf(0) }
 
     val gameState    by vm.gameState.collectAsState()
     val isReviewMode by vm.isReviewMode.collectAsState()
 
-    /** Navigate to [target], but gate behind a save-prompt if a live game is running. */
     fun navigateTo(target: Int) {
         val leavingPlay = pagerState.currentPage == 1 && target != 1
         val active = gameState.moves.isNotEmpty() && !gameState.isGameOver && !isReviewMode
@@ -108,7 +104,6 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
     Scaffold(
         containerColor = Color(0xFF0D0D0D),
         bottomBar = {
-            // Hide the bottom nav when fullscreen is active on the Play page
             if (!(isFullscreen && onPlayPage)) {
                 NavigationBar(
                     containerColor = navBg,
@@ -141,8 +136,6 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
     ) { padding ->
         HorizontalPager(
             state = pagerState,
-            // Swipe disabled — only the bottom nav bar can switch tabs.
-            // This is critical to stop accidental mid-game tab changes.
             userScrollEnabled = false,
             modifier = Modifier
                 .fillMaxSize()
@@ -150,7 +143,14 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
         ) { page ->
             when (page) {
                 0 -> HomeScreen(
-                    onPlayVsComputer = { navigateTo(1) },
+                    onPlayVsRyzix = { playerIsWhite ->
+                        vm.newGame(otbMode = false, playerIsWhite = playerIsWhite)
+                        scope.launch { pagerState.animateScrollToPage(1) }
+                    },
+                    onPlayOtb = {
+                        vm.newGame(otbMode = true, playerIsWhite = true)
+                        scope.launch { pagerState.animateScrollToPage(1) }
+                    },
                 )
                 1 -> GameScreen(
                     onBack = { navigateTo(0) },
@@ -180,7 +180,6 @@ fun MainPagerScreen(onThemeSettings: () -> Unit) {
         }
     }
 
-    // ── Mid-game save / discard prompt ────────────────────────────────────────
     if (showSavePrompt) {
         AlertDialog(
             onDismissRequest = { showSavePrompt = false },

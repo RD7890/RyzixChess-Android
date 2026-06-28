@@ -35,7 +35,7 @@ import com.ryzix.chess.viewmodel.MoveGradeResult
 import kotlinx.coroutines.launch
 
 // ────────────────────────────────────────────────────────────────────────────
-//  Public: Stockfish analysis strip + move list
+//  Public: Ryzix analysis strip + move list
 // ────────────────────────────────────────────────────────────────────────────
 
 @Composable
@@ -50,13 +50,15 @@ fun StockfishPanel(
     moveGrade: MoveGradeResult?,
     onToggleEngine: () -> Unit,
     modifier: Modifier = Modifier,
+    // When false (vs Ryzix mode), hide analysis lines and arrows from the user
+    isOtbMode: Boolean = true,
 ) {
     var expanded by remember { mutableStateOf(true) }
 
     // No animateContentSize — it was causing excessive recompositions under rapid eval updates
     Column(modifier = modifier) {
 
-        // ── Stockfish strip ───────────────────────────────────────────────
+        // ── Engine strip ───────────────────────────────────────────────
         Surface(
             color = MaterialTheme.colorScheme.surface,
             tonalElevation = 4.dp,
@@ -64,7 +66,7 @@ fun StockfishPanel(
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(enabled = engineEnabled && engineAvailable) {
+                    .clickable(enabled = engineEnabled && engineAvailable && isOtbMode) {
                         if (isThinking || analysisLines.isNotEmpty()) expanded = !expanded
                     }
                     .padding(horizontal = 14.dp, vertical = 10.dp),
@@ -78,19 +80,47 @@ fun StockfishPanel(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    text = "Stockfish 16",
+                    text = "Ryzix Engine",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(modifier = Modifier.width(10.dp))
 
-                if (engineEnabled && engineAvailable) {
+                // Only show eval chip in OTB mode
+                if (isOtbMode && engineEnabled && engineAvailable) {
                     EvalChip(eval = eval, isThinking = isThinking)
                     Spacer(modifier = Modifier.width(8.dp))
                 }
 
-                if (moveGrade != null && engineEnabled && engineAvailable) {
+                // Only show move grade badge in OTB mode
+                if (isOtbMode && moveGrade != null && engineEnabled && engineAvailable) {
                     MoveGradeBadge(grade = moveGrade)
+                    Spacer(modifier = Modifier.width(6.dp))
+                }
+
+                // In vs Ryzix mode, show "Playing" indicator when engine is thinking
+                if (!isOtbMode && isThinking) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(10.dp),
+                                strokeWidth = 1.5.dp,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            Text(
+                                text = "Thinking…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.width(6.dp))
                 }
 
@@ -106,32 +136,49 @@ fun StockfishPanel(
                     Spacer(modifier = Modifier.width(6.dp))
                 }
 
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = when {
-                        !engineAvailable -> MaterialTheme.colorScheme.errorContainer
-                        engineEnabled    -> Color(0xFF2E7D32)
-                        else             -> MaterialTheme.colorScheme.surfaceVariant
-                    },
-                    modifier = Modifier.clickable(enabled = engineAvailable) { onToggleEngine() },
-                ) {
-                    Text(
-                        text = when {
-                            !engineAvailable -> "N/A"
-                            engineEnabled    -> "On"
-                            else             -> "Off"
-                        },
-                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                // Engine toggle only in OTB mode
+                if (isOtbMode) {
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
                         color = when {
-                            !engineAvailable -> MaterialTheme.colorScheme.onErrorContainer
-                            engineEnabled    -> Color.White
-                            else             -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                            !engineAvailable -> MaterialTheme.colorScheme.errorContainer
+                            engineEnabled    -> Color(0xFF2E7D32)
+                            else             -> MaterialTheme.colorScheme.surfaceVariant
                         },
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                    )
+                        modifier = Modifier.clickable(enabled = engineAvailable) { onToggleEngine() },
+                    ) {
+                        Text(
+                            text = when {
+                                !engineAvailable -> "N/A"
+                                engineEnabled    -> "On"
+                                else             -> "Off"
+                            },
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = when {
+                                !engineAvailable -> MaterialTheme.colorScheme.onErrorContainer
+                                engineEnabled    -> Color.White
+                                else             -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f)
+                            },
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
+                } else {
+                    // In vs Ryzix mode show static label
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = if (engineAvailable) Color(0xFF1A2E1A) else MaterialTheme.colorScheme.errorContainer,
+                    ) {
+                        Text(
+                            text = if (engineAvailable) "vs Ryzix" else "N/A",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = if (engineAvailable) Color(0xFF4CAF50) else MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                        )
+                    }
                 }
 
-                if (engineEnabled && engineAvailable && (isThinking || analysisLines.isNotEmpty())) {
+                // Expand/collapse only in OTB mode
+                if (isOtbMode && engineEnabled && engineAvailable && (isThinking || analysisLines.isNotEmpty())) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
                         imageVector = if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
@@ -143,9 +190,8 @@ fun StockfishPanel(
             }
         }
 
-        // ── Analysis lines (only when expanded) ──────────────────────────
-        // Fixed height prevents layout shifts when lines appear/disappear or update.
-        if (expanded && engineEnabled && engineAvailable) {
+        // ── Analysis lines — OTB mode only ───────────────────────────
+        if (isOtbMode && expanded && engineEnabled && engineAvailable) {
             Surface(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 tonalElevation = 2.dp,

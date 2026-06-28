@@ -49,6 +49,7 @@ fun GameScreen(
     val prefs            by vm.prefs.collectAsState()
     val promotionPending by vm.promotionPending.collectAsState()
     val isReviewMode     by vm.isReviewMode.collectAsState()
+    val isOtbMode        by vm.isOtbMode.collectAsState()
 
     var showMoveList      by remember { mutableStateOf(false) }
     var showSettingsSheet by remember { mutableStateOf(false) }
@@ -56,7 +57,6 @@ fun GameScreen(
     var showGameOverDialog by remember { mutableStateOf(true) }
     LaunchedEffect(state.isGameOver) { if (state.isGameOver) showGameOverDialog = true }
 
-    // Which color is at the bottom (camera side)
     val bottomIsWhite = !state.isFlipped
 
     Column(
@@ -75,18 +75,24 @@ fun GameScreen(
             // Mode label
             Surface(
                 shape = RoundedCornerShape(6.dp),
-                color = if (isReviewMode)
-                    MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
-                else
-                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f),
+                color = when {
+                    isReviewMode -> MaterialTheme.colorScheme.tertiary.copy(alpha = 0.15f)
+                    !isOtbMode   -> Color(0xFF1E0A0B)
+                    else         -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                },
             ) {
                 Text(
-                    text = if (isReviewMode) "Review" else "Over the Board",
+                    text = when {
+                        isReviewMode -> "Review"
+                        !isOtbMode   -> "vs Ryzix"
+                        else         -> "Over the Board"
+                    },
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = if (isReviewMode)
-                        MaterialTheme.colorScheme.tertiary
-                    else
-                        MaterialTheme.colorScheme.primary,
+                    color = when {
+                        isReviewMode -> MaterialTheme.colorScheme.tertiary
+                        !isOtbMode   -> MaterialTheme.colorScheme.primary
+                        else         -> MaterialTheme.colorScheme.primary
+                    },
                     modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                 )
             }
@@ -102,18 +108,22 @@ fun GameScreen(
                 Icon(Icons.Rounded.AddCircleOutline, contentDescription = "New game",
                     tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
             }
-            IconButton(onClick = { showSettingsSheet = true }) {
-                Icon(Icons.Rounded.Settings, contentDescription = "Engine settings",
-                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+            if (isOtbMode) {
+                IconButton(onClick = { showSettingsSheet = true }) {
+                    Icon(Icons.Rounded.Settings, contentDescription = "Engine settings",
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                }
             }
         }
 
         // ── Opponent player bar (top) ───────────────────────────────────────────
         PlayerBar(
+            name           = if (!isOtbMode) { if (!bottomIsWhite) "You" else "Ryzix" } else { if (!bottomIsWhite) "White" else "Black" },
             isWhite        = !bottomIsWhite,
             isActive       = if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
             isGameOver     = state.isGameOver,
             isThinking     = isThinking && ((if (!bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn)),
+            isEngine       = !isOtbMode && bottomIsWhite,
             modifier       = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 4.dp),
@@ -129,7 +139,7 @@ fun GameScreen(
             ChessBoard(
                 modifier        = Modifier.fillMaxSize(),
                 state           = state,
-                lastMoveGrade   = moveGrade,
+                lastMoveGrade   = if (isOtbMode) moveGrade else null,
                 onSquareTap     = { sq -> vm.onSquareTap(sq) },
                 showCoordinates = true,
             )
@@ -137,10 +147,12 @@ fun GameScreen(
 
         // ── Your player bar (bottom) ───────────────────────────────────────────
         PlayerBar(
+            name           = if (!isOtbMode) { if (bottomIsWhite) "You" else "Ryzix" } else { if (bottomIsWhite) "White" else "Black" },
             isWhite        = bottomIsWhite,
             isActive       = if (bottomIsWhite) state.isWhiteTurn else !state.isWhiteTurn,
             isGameOver     = state.isGameOver,
             isThinking     = false,
+            isEngine       = !isOtbMode && !bottomIsWhite,
             modifier       = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 10.dp, vertical = 4.dp),
@@ -149,7 +161,7 @@ fun GameScreen(
         // ── In-game control bar ────────────────────────────────────────────────
         GameBottomBar(
             onMenu           = { showMoveList = !showMoveList },
-            onEngineStrength = { showSettingsSheet = true },
+            onEngineStrength = { if (isOtbMode) showSettingsSheet = true },
             onBack           = { vm.navigateBack() },
             onForward        = { vm.navigateForward() },
             onUndo           = { vm.undoOtbMove() },
@@ -159,7 +171,7 @@ fun GameScreen(
             isReviewMode     = isReviewMode,
         )
 
-        // ── Stockfish analysis strip + optional move list ──────────────────────
+        // ── Ryzix analysis strip + optional move list ──────────────────────────
         StockfishPanel(
             eval            = eval,
             isThinking      = isThinking,
@@ -171,6 +183,7 @@ fun GameScreen(
             moveGrade       = moveGrade,
             onToggleEngine  = { vm.toggleEngine() },
             modifier        = Modifier.fillMaxWidth(),
+            isOtbMode       = isOtbMode,
         )
         Spacer(modifier = Modifier.height(8.dp))
     }
@@ -199,15 +212,19 @@ fun GameScreen(
     // ── New game dialog ────────────────────────────────────────────────────────
     if (showNewGameDialog) {
         NewGameDialog(
-            onStart = { whiteAtBottom ->
+            onStartOtb = { whiteAtBottom ->
                 showNewGameDialog = false
                 vm.newGame(otbMode = true, playerIsWhite = whiteAtBottom)
+            },
+            onStartVsEngine = { playerIsWhite ->
+                showNewGameDialog = false
+                vm.newGame(otbMode = false, playerIsWhite = playerIsWhite)
             },
             onDismiss = { showNewGameDialog = false },
         )
     }
 
-    // ── Engine settings sheet ──────────────────────────────────────────────────
+    // ── Engine settings sheet (OTB only) ──────────────────────────────────────
     if (showSettingsSheet) {
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
@@ -230,16 +247,17 @@ fun GameScreen(
 
 @Composable
 private fun PlayerBar(
+    name: String,
     isWhite: Boolean,
     isActive: Boolean,
     isGameOver: Boolean,
     isThinking: Boolean,
+    isEngine: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    val playerName  = if (isWhite) "White" else "Black"
     val avatarBg    = if (isWhite) Color(0xFFF0D9B5) else Color(0xFF2C2C2C)
     val avatarFg    = if (isWhite) Color(0xFF1A1A1A) else Color(0xFFF0D9B5)
-    val pieceSymbol = if (isWhite) "♔" else "♚"
+    val pieceSymbol = if (isEngine) "♟" else if (isWhite) "♔" else "♚"
     val activeColor = MaterialTheme.colorScheme.primary
 
     Row(
@@ -263,32 +281,30 @@ private fun PlayerBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Avatar circle
         Box(
             modifier = Modifier
                 .size(36.dp)
                 .clip(CircleShape)
-                .background(avatarBg),
+                .background(if (isEngine) Color(0xFF1A1A1A) else avatarBg),
             contentAlignment = Alignment.Center,
         ) {
             Text(
                 text = pieceSymbol,
                 fontSize = 18.sp,
-                color = avatarFg,
+                color = if (isEngine) MaterialTheme.colorScheme.primary else avatarFg,
             )
         }
 
-        // Name + status
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = playerName,
+                text = name,
                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 text = when {
                     isGameOver     -> "Game over"
-                    isActive       -> "Your turn"
+                    isActive       -> if (isEngine) "Thinking…" else "Your turn"
                     else           -> "Waiting…"
                 },
                 style = MaterialTheme.typography.labelSmall,
@@ -300,7 +316,6 @@ private fun PlayerBar(
             )
         }
 
-        // Thinking spinner when engine is analyzing for this side (only shown if isThinking flag)
         if (isThinking) {
             CircularProgressIndicator(
                 modifier = Modifier.size(16.dp),
@@ -309,7 +324,6 @@ private fun PlayerBar(
             )
         }
 
-        // Active turn indicator dot
         if (isActive && !isGameOver) {
             Box(
                 modifier = Modifier
@@ -430,44 +444,105 @@ private fun GameOverDialog(
 
 @Composable
 private fun NewGameDialog(
-    onStart: (whiteAtBottom: Boolean) -> Unit,
+    onStartOtb: (whiteAtBottom: Boolean) -> Unit,
+    onStartVsEngine: (playerIsWhite: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var selectedTab by remember { mutableStateOf(0) } // 0 = vs Ryzix, 1 = OTB
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("New Game", fontWeight = FontWeight.Bold) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Text(
-                    text = "Which side at bottom?",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
-                Text(
-                    text = "Stockfish will show hints & arrows. Both sides played by you.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
-                )
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // Mode tabs
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    ColorPickerTile(
-                        symbol = "♔", label = "White",
-                        bg = Color(0xFFF0D9B5), fg = Color(0xFF1A1A1A),
-                        modifier = Modifier.weight(1f), onClick = { onStart(true) },
+                    listOf("vs Ryzix", "Over the Board").forEachIndexed { idx, label ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (selectedTab == idx) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.surfaceVariant,
+                            modifier = Modifier.weight(1f).clickable { selectedTab = idx },
+                        ) {
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                color = if (selectedTab == idx) MaterialTheme.colorScheme.onPrimary
+                                        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(vertical = 10.dp),
+                            )
+                        }
+                    }
+                }
+
+                if (selectedTab == 0) {
+                    Text(
+                        text = "Play against Ryzix Engine. No hints or arrows — test your skills.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     )
-                    ColorPickerTile(
-                        symbol = "?", label = "Random",
-                        bg = MaterialTheme.colorScheme.surfaceVariant,
-                        fg = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f), onClick = { onStart((0..1).random() == 0) },
+                    Text(
+                        text = "Your color:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     )
-                    ColorPickerTile(
-                        symbol = "♚", label = "Black",
-                        bg = Color(0xFF2C2C2C), fg = Color(0xFFF0D9B5),
-                        modifier = Modifier.weight(1f), onClick = { onStart(false) },
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ColorPickerTile(
+                            symbol = "♔", label = "White",
+                            bg = Color(0xFFF0D9B5), fg = Color(0xFF1A1A1A),
+                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine(true) },
+                        )
+                        ColorPickerTile(
+                            symbol = "?", label = "Random",
+                            bg = MaterialTheme.colorScheme.surfaceVariant,
+                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine((0..1).random() == 0) },
+                        )
+                        ColorPickerTile(
+                            symbol = "♚", label = "Black",
+                            bg = Color(0xFF2C2C2C), fg = Color(0xFFF0D9B5),
+                            modifier = Modifier.weight(1f), onClick = { onStartVsEngine(false) },
+                        )
+                    }
+                } else {
+                    Text(
+                        text = "Two players, one device. Ryzix Engine shows hints and arrows.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
                     )
+                    Text(
+                        text = "Which side at bottom?",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        ColorPickerTile(
+                            symbol = "♔", label = "White",
+                            bg = Color(0xFFF0D9B5), fg = Color(0xFF1A1A1A),
+                            modifier = Modifier.weight(1f), onClick = { onStartOtb(true) },
+                        )
+                        ColorPickerTile(
+                            symbol = "?", label = "Random",
+                            bg = MaterialTheme.colorScheme.surfaceVariant,
+                            fg = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.weight(1f), onClick = { onStartOtb((0..1).random() == 0) },
+                        )
+                        ColorPickerTile(
+                            symbol = "♚", label = "Black",
+                            bg = Color(0xFF2C2C2C), fg = Color(0xFFF0D9B5),
+                            modifier = Modifier.weight(1f), onClick = { onStartOtb(false) },
+                        )
+                    }
                 }
             }
         },
@@ -526,90 +601,71 @@ fun InlineEngineSettings(
 
         EngineRow(
             label = "Engine",
-            value = if (engineAvailable) "Stockfish 16 (ARM64)" else "Not available",
+            value = if (engineAvailable) "Ryzix Engine (ARM64)" else "Not available",
         )
 
         if (!engineAvailable) {
             Spacer(modifier = Modifier.height(8.dp))
             Surface(shape = RoundedCornerShape(8.dp), color = MaterialTheme.colorScheme.errorContainer) {
                 Text(
-                    text = "Stockfish binary not found. Install the APK built by GitHub Actions CI.",
+                    text = "Ryzix Engine binary not found. Install the APK built by GitHub Actions CI.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onErrorContainer,
                     modifier = Modifier.padding(12.dp),
                 )
             }
-            Spacer(modifier = Modifier.height(8.dp))
+            return
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
-
-        val levelLabel = levelLabels.getOrElse(prefs.levelIndex) { "${prefs.levelIndex + 1}" }
-        SliderRow(
-            label = "Level", value = (prefs.levelIndex + 1).toFloat(),
-            valueRange = 1f..12f, steps = 10, display = levelLabel,
-            enabled = engineAvailable, onValueChange = { onLevelChange(it.toInt() - 1) },
+        Spacer(modifier = Modifier.height(12.dp))
+        Text(
+            text = "Strength",
+            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            modifier = Modifier.padding(bottom = 8.dp),
         )
-        SliderRow(
-            label = "Search time", value = prefs.searchTimeMs.toFloat(),
-            valueRange = 3000f..8000f, steps = 9, display = "${prefs.searchTimeMs / 1000f}s",
-            enabled = engineAvailable, onValueChange = { onSearchTimeChange(it.toInt()) },
+        Slider(
+            value = prefs.levelIndex.toFloat(),
+            onValueChange = { onLevelChange(it.toInt()) },
+            valueRange = 0f..11f,
+            steps = 10,
         )
-        SliderRow(
-            label = "Lines (MultiPV)", value = prefs.multiPv.toFloat(),
-            valueRange = 1f..5f, steps = 3, display = "${prefs.multiPv}",
-            enabled = engineAvailable, onValueChange = { onMultiPvChange(it.toInt()) },
-        )
-        SliderRow(
-            label = "CPUs", value = prefs.threads.toFloat(),
-            valueRange = 1f..4f, steps = 2, display = "${prefs.threads}",
-            enabled = engineAvailable, onValueChange = { onThreadsChange(it.toInt()) },
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Text(
+                text = levelLabels.getOrElse(prefs.levelIndex) { "?" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = "Level ${prefs.levelIndex + 1} / 12",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            )
+        }
     }
 }
 
 @Composable
 private fun EngineRow(label: String, value: String) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium)
-        Text(value, style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
-    }
-}
-
-@Composable
-private fun SliderRow(
-    label: String, value: Float,
-    valueRange: ClosedFloatingPointRange<Float>,
-    steps: Int, display: String, enabled: Boolean = true,
-    onValueChange: (Float) -> Unit,
-) {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            label, style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.width(120.dp),
-            color = if (enabled) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f),
+            text = label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
         )
-        Slider(
-            value = value, onValueChange = onValueChange,
-            valueRange = valueRange, steps = steps, enabled = enabled,
-            modifier = Modifier.weight(1f),
-            colors = SliderDefaults.colors(
-                thumbColor = MaterialTheme.colorScheme.primary,
-                activeTrackColor = MaterialTheme.colorScheme.primary,
-            ),
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
         )
-        Text(display, style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.width(48.dp),
-            color = if (enabled) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f))
     }
 }

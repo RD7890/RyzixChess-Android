@@ -151,11 +151,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var engineMoveInFlight = false
     private var gameInitialized = false
 
-    /**
-     * Cache of move grades keyed by the FEN *after* the move was played.
-     * Prevents undo/redo from re-analyzing and producing different classifications
-     * for the exact same position due to engine non-determinism.
-     */
     private val gradeCache = mutableMapOf<String, MoveGradeResult>()
 
     init {
@@ -211,17 +206,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 _isEngineThinking.value = false
                 engineMoveInFlight = false
 
-                // Update arrows only on final bestmove — never during intermediate analysis
-                if (_engineEnabled.value && _prefs.value.showArrows && _analysisLines.value.isNotEmpty()) {
+                // Arrows only in OTB mode — never reveal best move to player in vs Ryzix
+                if (_isOtbMode.value && _engineEnabled.value && _prefs.value.showArrows && _analysisLines.value.isNotEmpty()) {
                     updateArrows(_analysisLines.value)
                 }
 
+                // Move grading only in OTB mode
                 if (_isOtbMode.value && isGradingPending && _analysisLines.value.isNotEmpty()) {
                     isGradingPending = false
                     val postEval = _analysisLines.value.firstOrNull()?.eval ?: _engineEval.value
                     gradeLastMove(postEval)
                 }
 
+                // vs Ryzix mode — engine makes its move automatically
                 if (!_isOtbMode.value && !gameState.value.isGameOver) {
                     val isEngineTurn = if (_playerIsWhite.value)
                         !gameState.value.isWhiteTurn
@@ -235,7 +232,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         delay(300)
                         chessGame.tryMove(from, to, promo)
                         soundManager.play("move")
-                        runAnalysis()
+                        // Don't run analysis in vs Ryzix — no hints shown; just save if game over
+                        if (gameState.value.isGameOver) {
+                            soundManager.play("confirmation")
+                            saveCurrentGame()
+                        }
                     }
                 }
             }
@@ -259,7 +260,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private fun gradeLastMove(postEval: Float) {
         val currentFen = chessGame.getCurrentFen()
 
-        // Return cached grade for this position — prevents undo/redo inconsistency
         gradeCache[currentFen]?.let {
             _lastMoveGrade.value = it
             return
@@ -290,7 +290,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _lastMoveGrade.value = result
     }
 
-    // ── Arrow drawing ──────────────────────────────────────────────────────────
+    // ── Arrow drawing (OTB only) ───────────────────────────────────────────────
 
     private fun updateArrows(lines: List<AnalysisLine>) {
         val arrows = lines.take(3).mapIndexedNotNull { idx, line ->
@@ -362,6 +362,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         saveCurrentGame()
                     }
                 } else {
+                    // vs Ryzix: trigger engine to play immediately
                     _analysisLines.value = emptyList()
                     _engineEval.value = 0f
                     triggerEngineMove()
@@ -443,6 +444,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _playerIsWhite.value = playerIsWhite
         gradeCache.clear()
         chessGame.reset()
+        chessGame.clearArrows()
         chessGame.setFlipped(!playerIsWhite)
 
         viewModelScope.launch {
@@ -452,11 +454,14 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             delay(400)
             if (otbMode) {
+                // OTB: run analysis with arrows/hints visible
                 runAnalysis()
-            } else if (!playerIsWhite) {
-                triggerEngineMove()
             } else {
-                runAnalysis()
+                // vs Ryzix: engine plays black first if player is white, otherwise engine moves immediately
+                if (!playerIsWhite) {
+                    triggerEngineMove()
+                }
+                // If player is white, wait for player to make first move — no analysis shown
             }
         }
     }
@@ -467,17 +472,16 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         _lastMoveGrade.value = null
         chessGame.navigateBack()
         chessGame.clearArrows()
-        if (_engineEnabled.value) runAnalysis()
+        if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
     }
 
     fun navigateForward() {
         _lastMoveGrade.value = null
         chessGame.navigateForward()
         chessGame.clearArrows()
-        // Restore cached grade for this position — prevents different classification on redo
         val cachedGrade = gradeCache[gameState.value.fen]
         if (cachedGrade != null) _lastMoveGrade.value = cachedGrade
-        if (_engineEnabled.value) runAnalysis()
+        if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
     }
 
     fun undoOtbMove() {
@@ -489,7 +493,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         if (!_isOtbMode.value) chessGame.undoMove()
         chessGame.clearArrows()
         persistCurrentGame()
-        if (_engineEnabled.value) runAnalysis()
+        if (_engineEnabled.value && _isOtbMode.value) runAnalysis()
     }
 
     fun undoMove() {
@@ -653,7 +657,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             getApplication<Application>().dataStore.edit { it[PrefKeys.LEVEL] = index }
         }
         engine.stop()
-        runAnalysis()
+        if (_isOtbMode.value) runAnalysis()
     }
 
     fun saveSearchTime(ms: Int) {

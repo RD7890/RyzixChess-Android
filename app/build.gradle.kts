@@ -33,6 +33,8 @@ android {
             storePassword = localProperties.getProperty("signing.storePassword", "123456")
             keyAlias = localProperties.getProperty("signing.keyAlias", "RyzixChess")
             keyPassword = localProperties.getProperty("signing.keyPassword", "123456")
+            // PKCS12 format — generated via openssl, committed to repo for permanent signature
+            storeType = "PKCS12"
         }
     }
 

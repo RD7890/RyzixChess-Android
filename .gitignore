@@ -8,10 +8,8 @@
 .externalNativeBuild
 .cxx
 
-# Signing (generated in CI automatically)
-signing/signing-key.jks
-*.jks
-*.keystore
+# Signing key is committed permanently — same key across all builds (no reinstall needed)
+# signing/signing-key.jks  <- intentionally NOT ignored
 
 # Stockfish binary (compiled in CI automatically)
 app/src/main/assets/stockfish
