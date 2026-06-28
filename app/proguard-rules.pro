@@ -1,0 +1,2 @@
+-keep class com.github.bhlangonijr.chesslib.** { *; }
+-dontwarn com.github.bhlangonijr.**
