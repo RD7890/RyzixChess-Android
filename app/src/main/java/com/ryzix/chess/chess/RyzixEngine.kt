@@ -12,9 +12,13 @@ data class EngineSettings(
     val searchTimeMs: Int = 1000,
     val multiPv: Int = 3,
     val threads: Int = 1,
+    val hashMb: Int = 16,
     // UCI ELO limiting — set to true + eloRating for humanoid weak play
     val limitStrength: Boolean = false,
     val eloRating: Int = 1500,
+    // Humanoid: weighted random selection from top-3 moves (60/30/10%)
+    // makes Ryzix play strong but unpredictably varied — never the exact same game twice
+    val humanoidMode: Boolean = false,
 )
 
 data class AnalysisLine(
@@ -42,23 +46,28 @@ val STOCKFISH_LEVELS = listOf(
     EngineSettings(skillLevel = 20, searchTimeMs = 2000, multiPv = 3, threads = 2),
 )
 
-// Full-strength "Stockfish 16" config for AI vs AI
+// Full-strength "Stockfish 16" config for AI vs AI — absolute maximum
 val SF_BATTLE_SETTINGS = EngineSettings(
     skillLevel    = 20,
-    searchTimeMs  = 2000,
+    searchTimeMs  = 5000,   // 5 s per move — deepest practical on mobile
     multiPv       = 1,
-    threads       = 2,
+    threads       = 4,      // saturate all cores
+    hashMb        = 256,    // maximum hash table SF16 benefits from on mobile
     limitStrength = false,
+    humanoidMode  = false,
 )
 
-// Humanoid 1000-ELO "Ryzix" config for AI vs AI
-val RYZIX_1000_SETTINGS = EngineSettings(
-    skillLevel    = 0,
-    searchTimeMs  = 400,
-    multiPv       = 1,
-    threads       = 1,
-    limitStrength = true,
-    eloRating     = 1000,
+// Ryzix "5000 ELO" humanoid config for AI vs AI
+// Max resources + MultiPV-3 weighted random selection → superhuman strength,
+// unpredictable variety — never the same game twice.
+val RYZIX_BATTLE_SETTINGS = EngineSettings(
+    skillLevel    = 20,
+    searchTimeMs  = 8000,   // 8 s per move — deeper search than SF16
+    multiPv       = 3,      // required for humanoid weighted selection
+    threads       = 4,
+    hashMb        = 128,
+    limitStrength = false,
+    humanoidMode  = true,   // 60/30/10% weighted pick from top-3 moves
 )
 
 class RyzixEngine(
@@ -106,6 +115,8 @@ class RyzixEngine(
     @Volatile private var isAnalysisPending = false
 
     @Volatile private var pendingSearchFen: String? = null
+    // Captured when a search actually starts — available when bestmove arrives
+    @Volatile private var activeSearchSettings: EngineSettings? = null
     @Volatile private var pendingSearchSettings: EngineSettings? = null
     @Volatile private var isSearchPending = false
 
@@ -175,6 +186,7 @@ class RyzixEngine(
                                 pendingSearchFen = null
                                 pendingSearchSettings = null
                                 if (fen != null && settings != null) {
+                                    activeSearchSettings = settings  // captured for humanoid bestmove selection
                                     stoppingForRestart = false
                                     sendCommand("ucinewgame")
                                     sendCommand("position fen $fen")
@@ -192,16 +204,24 @@ class RyzixEngine(
                                 _analysisFlow.emit(sorted)
                             }
 
-                            lineBuffer.clear()
-                            lastEmittedDepth = -1
-
                             if (!wasRestart) {
                                 val parts = line.split(" ")
-                                val move = if (parts.size >= 2) parts[1] else null
-                                if (move != null && move != "(none)") {
-                                    _bestMoveFlow.emit(move)
+                                val engineBest = if (parts.size >= 2) parts[1] else null
+                                if (engineBest != null && engineBest != "(none)") {
+                                    // Humanoid mode: pick from top-3 moves with weighted randomness
+                                    // so Ryzix never plays the exact same game twice yet stays superhuman.
+                                    val chosen = if (activeSearchSettings?.humanoidMode == true
+                                        && lineBuffer.size >= 2) {
+                                        selectHumanoidMove(lineBuffer.values.toList()) ?: engineBest
+                                    } else {
+                                        engineBest
+                                    }
+                                    _bestMoveFlow.emit(chosen)
                                 }
                             }
+
+                            lineBuffer.clear()
+                            lastEmittedDepth = -1
                         }
 
                         line.startsWith("info") && line.contains("multipv") -> {
@@ -242,7 +262,38 @@ class RyzixEngine(
             sendCommand("setoption name Skill Level value ${settings.skillLevel}")
         }
         sendCommand("setoption name Threads value ${settings.threads}")
+        sendCommand("setoption name Hash value ${settings.hashMb}")
         sendCommand("setoption name MultiPV value ${settings.multiPv}")
+    }
+
+    /**
+     * Weighted random selection from top-3 analysis lines.
+     * Weights: 1st move 60%, 2nd 30%, 3rd 10% — only included when within eval thresholds.
+     * When in a winning or losing forced sequence (isMate), always plays the best move.
+     */
+    private fun selectHumanoidMove(lines: List<AnalysisLine>): String? {
+        val sorted = lines.sortedBy { it.rank }
+        val best = sorted.firstOrNull() ?: return null
+        // In forced mate sequences always play the best line
+        if (best.isMate) return best.move
+        val candidates = mutableListOf<Pair<String, Double>>()
+        candidates.add(best.move to 0.60)
+        sorted.getOrNull(1)
+            ?.takeIf { !it.isMate && kotlin.math.abs(it.eval - best.eval) < 0.40f }
+            ?.let { candidates.add(it.move to 0.30) }
+        sorted.getOrNull(2)
+            ?.takeIf { !it.isMate && kotlin.math.abs(it.eval - best.eval) < 0.60f }
+            ?.let { candidates.add(it.move to 0.10) }
+        // Single candidate → no randomness needed
+        if (candidates.size == 1) return best.move
+        val total = candidates.sumOf { it.second }
+        val r = Math.random() * total
+        var acc = 0.0
+        for ((move, weight) in candidates) {
+            acc += weight
+            if (r < acc) return move
+        }
+        return candidates.last().first
     }
 
     fun startAnalysis(fen: String, settings: EngineSettings) {
@@ -277,6 +328,7 @@ class RyzixEngine(
         pendingSettings = null
         pendingSearchFen = null
         pendingSearchSettings = null
+        activeSearchSettings = null
         sendCommand("stop")
     }
 
