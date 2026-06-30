@@ -45,29 +45,47 @@ data class GameState(
     val canGoBack: Boolean = false,
     val canGoForward: Boolean = false,
     val checkedKingSquare: String? = null,
+    val isInHistoricalView: Boolean = false,
+    val capturedByWhite: String = "",
+    val capturedByBlack: String = "",
+    val materialAdvantage: Int = 0,
 )
 
 class ChessGame {
     private val board = Board()
     private val moveHistory = mutableListOf<ChessMove>()
-    private val redoStack = mutableListOf<Triple<String, String, Char>>()
+
+    // fenHistory[0] = start FEN, fenHistory[i] = FEN after moveHistory[i-1]
+    private val fenHistory = mutableListOf<String>()
+    // viewIndex: which FEN position is currently displayed
+    private var viewIndex = 0
 
     private val _state = MutableStateFlow(GameState())
     val state: StateFlow<GameState> = _state
 
     init {
         board.loadFromFen(START_FEN)
+        fenHistory.add(START_FEN)
         updateState()
     }
+
+    /** True when the user is viewing a historical position (not the latest move) */
+    val isInHistoricalView: Boolean get() = viewIndex < fenHistory.size - 1
 
     fun reset(fen: String = START_FEN) {
         board.loadFromFen(fen)
         moveHistory.clear()
-        redoStack.clear()
+        fenHistory.clear()
+        fenHistory.add(fen)
+        viewIndex = 0
         updateState()
     }
 
     fun selectSquare(squareName: String): Boolean {
+        if (isInHistoricalView) {
+            _state.value = _state.value.copy(selectedSquare = null, legalMoves = emptyList())
+            return false
+        }
         val square = Square.valueOf(squareName.uppercase())
         val current = _state.value
 
@@ -97,14 +115,12 @@ class ChessGame {
             .filter { it.from == square }
             .map { it.to.value().lowercase() }
 
-        _state.value = current.copy(
-            selectedSquare = squareName,
-            legalMoves = legal,
-        )
+        _state.value = current.copy(selectedSquare = squareName, legalMoves = legal)
         return false
     }
 
     fun isPromotionMove(fromSq: String, toSq: String): Boolean {
+        if (isInHistoricalView) return false
         return try {
             val from = Square.valueOf(fromSq.uppercase())
             val to   = Square.valueOf(toSq.uppercase())
@@ -116,6 +132,7 @@ class ChessGame {
     }
 
     fun tryMove(fromSq: String, toSq: String, promoChar: Char = 'q'): Boolean {
+        if (isInHistoricalView) return false
         val from = Square.valueOf(fromSq.uppercase())
         val to   = Square.valueOf(toSq.uppercase())
 
@@ -139,11 +156,10 @@ class ChessGame {
         val san = computeSan(board, move)
         board.doMove(move)
 
-        // Append check/mate suffix
         val suffix = when {
-            board.isMated      -> "#"
+            board.isMated        -> "#"
             board.isKingAttacked -> "+"
-            else               -> ""
+            else                 -> ""
         }
 
         val chessMove = ChessMove(
@@ -155,31 +171,42 @@ class ChessGame {
             promotion = move.promotion.takeIf { it != Piece.NONE }?.name,
         )
         moveHistory.add(chessMove)
-        redoStack.clear()
+        fenHistory.add(board.fen)
+        viewIndex = fenHistory.size - 1
         updateState()
         return true
     }
 
+    /** Navigate to the previous position — does NOT undo the move on the live board */
     fun navigateBack(): Boolean {
-        if (moveHistory.isEmpty()) return false
-        val last = moveHistory.removeLast()
-        redoStack.add(Triple(last.from, last.to, last.promotion?.firstOrNull() ?: 'q'))
-        board.undoMove()
+        if (viewIndex <= 0) return false
+        viewIndex--
         updateState()
         return true
     }
 
+    /** Navigate forward to the next recorded position */
     fun navigateForward(): Boolean {
-        if (redoStack.isEmpty()) return false
-        val (from, to, promo) = redoStack.removeLast()
-        return tryMove(from, to, promo)
+        if (viewIndex >= fenHistory.size - 1) return false
+        viewIndex++
+        updateState()
+        return true
     }
 
+    /** Jump straight to the live (latest) position */
+    fun navigateToLive() {
+        viewIndex = fenHistory.size - 1
+        updateState()
+    }
+
+    /** Actually undo the last move on the live board — for OTB use only */
     fun undoMove(): Boolean {
+        viewIndex = fenHistory.size - 1   // snap to live first
         if (moveHistory.isEmpty()) return false
         board.undoMove()
         moveHistory.removeLastOrNull()
-        redoStack.clear()
+        fenHistory.removeLastOrNull()
+        viewIndex = fenHistory.size - 1
         updateState()
         return true
     }
@@ -191,9 +218,7 @@ class ChessGame {
     fun getPieceAt(squareName: String): Piece {
         return try {
             board.getPiece(Square.valueOf(squareName.uppercase()))
-        } catch (e: Exception) {
-            Piece.NONE
-        }
+        } catch (e: Exception) { Piece.NONE }
     }
 
     fun getAllPieces(): Map<String, Piece> {
@@ -201,9 +226,7 @@ class ChessGame {
         for (sq in Square.values()) {
             if (sq == Square.NONE) continue
             val piece = board.getPiece(sq)
-            if (piece != Piece.NONE) {
-                result[sq.value().lowercase()] = piece
-            }
+            if (piece != Piece.NONE) result[sq.value().lowercase()] = piece
         }
         return result
     }
@@ -217,17 +240,11 @@ class ChessGame {
             .map { it.to.value().lowercase() }
     }
 
-    fun flipBoard() {
-        _state.value = _state.value.copy(isFlipped = !_state.value.isFlipped)
-    }
+    fun flipBoard() { _state.value = _state.value.copy(isFlipped = !_state.value.isFlipped) }
 
-    fun setFlipped(flipped: Boolean) {
-        _state.value = _state.value.copy(isFlipped = flipped)
-    }
+    fun setFlipped(flipped: Boolean) { _state.value = _state.value.copy(isFlipped = flipped) }
 
-    fun setArrows(arrows: List<Arrow>) {
-        _state.value = _state.value.copy(arrows = arrows)
-    }
+    fun setArrows(arrows: List<Arrow>) { _state.value = _state.value.copy(arrows = arrows) }
 
     fun addArrow(from: String, to: String, color: ArrowColor = ArrowColor.GREEN) {
         val current = _state.value.arrows.toMutableList()
@@ -236,41 +253,34 @@ class ChessGame {
         _state.value = _state.value.copy(arrows = current)
     }
 
-    fun clearArrows() {
-        _state.value = _state.value.copy(arrows = emptyList())
-    }
+    fun clearArrows() { _state.value = _state.value.copy(arrows = emptyList()) }
 
     // ── Persistence helpers ────────────────────────────────────────────────────
 
-    /** Returns all moves as a compact UCI string: "e2e4,e7e5,g1f3,..." */
     fun getMovesAsUci(): String {
         return moveHistory.joinToString(",") { m ->
             val promo = m.promotion?.firstOrNull()?.lowercaseChar()
-            if (promo != null) "${m.from}${m.to}$promo"
-            else "${m.from}${m.to}"
+            if (promo != null) "${m.from}${m.to}$promo" else "${m.from}${m.to}"
         }
     }
 
-    /** Replays a UCI move string to restore a saved game. */
     fun loadFromMoves(movesUci: String) {
         board.loadFromFen(START_FEN)
         moveHistory.clear()
-        redoStack.clear()
-        if (movesUci.isBlank()) {
-            updateState()
-            return
-        }
+        fenHistory.clear()
+        fenHistory.add(START_FEN)
+        viewIndex = 0
+        if (movesUci.isBlank()) { updateState(); return }
         movesUci.split(",").forEach { uci ->
             if (uci.length >= 4) {
-                val from = uci.substring(0, 2)
-                val to   = uci.substring(2, 4)
+                val from  = uci.substring(0, 2)
+                val to    = uci.substring(2, 4)
                 val promo = if (uci.length >= 5) uci[4] else 'q'
                 tryMove(from, to, promo)
             }
         }
     }
 
-    /** Generates a standard PGN string from the current game. */
     fun generatePgn(result: String = "*"): String {
         val date = SimpleDateFormat("yyyy.MM.dd").format(Date())
         val sb = StringBuilder()
@@ -282,10 +292,8 @@ class ChessGame {
         sb.appendLine("[Black \"Player\"]")
         sb.appendLine("[Result \"$result\"]")
         sb.appendLine()
-
-        val moves = moveHistory.toList()
         val moveSb = StringBuilder()
-        moves.forEachIndexed { index, move ->
+        moveHistory.toList().forEachIndexed { index, move ->
             if (index % 2 == 0) moveSb.append("${index / 2 + 1}. ")
             moveSb.append("${move.san} ")
         }
@@ -294,143 +302,136 @@ class ChessGame {
         return sb.toString()
     }
 
-    /**
-     * Loads a game from a PGN string (SAN moves).
-     * Returns true on success, false if parsing failed.
-     */
     fun loadFromPgn(pgn: String): Boolean {
         return try {
-            // Strip headers and comments
             val lines = pgn.lines().filter { !it.trimStart().startsWith("[") }
             val text = lines.joinToString(" ")
-                .replace(Regex("\\{[^}]*\\}"), " ") // remove {comments}
-                .replace(Regex(";[^\n]*"), " ")       // remove ;comments
-
-            // Extract move tokens — skip move numbers and result strings
-            val tokens = text.split(Regex("\\s+"))
-                .map { it.trim() }
+                .replace(Regex("\\{[^}]*\\}"), " ")
+                .replace(Regex(";[^\n]*"), " ")
+            val tokens = text.split(Regex("\\s+")).map { it.trim() }
                 .filter { tok ->
                     tok.isNotBlank() &&
-                    !tok.matches(Regex("\\d+\\.+")) &&   // move numbers
+                    !tok.matches(Regex("\\d+\\.+")) &&
                     tok !in setOf("1-0", "0-1", "1/2-1/2", "*")
                 }
-
             if (tokens.isEmpty()) return false
-
             board.loadFromFen(START_FEN)
             moveHistory.clear()
-            redoStack.clear()
-
+            fenHistory.clear()
+            fenHistory.add(START_FEN)
+            viewIndex = 0
             for (san in tokens) {
                 val move = sanToMove(san) ?: return false
                 val from = move.from.value().lowercase()
                 val to   = move.to.value().lowercase()
                 val promoChar = if (move.promotion != Piece.NONE) {
                     when(move.promotion.pieceType) {
-                        PieceType.QUEEN  -> 'q'
-                        PieceType.ROOK   -> 'r'
-                        PieceType.BISHOP -> 'b'
-                        PieceType.KNIGHT -> 'n'
-                        else             -> 'q'
+                        PieceType.QUEEN  -> 'q'; PieceType.ROOK   -> 'r'
+                        PieceType.BISHOP -> 'b'; PieceType.KNIGHT -> 'n'
+                        else -> 'q'
                     }
                 } else 'q'
                 if (!tryMove(from, to, promoChar)) return false
             }
+            updateState(); true
+        } catch (e: Exception) { false }
+    }
 
-            updateState()
-            true
-        } catch (e: Exception) {
-            false
+    // ── Captured pieces ────────────────────────────────────────────────────────
+
+    private fun computeCapturedPieces(displayBoard: Board): Triple<String, String, Int> {
+        val initialWhite = mapOf(
+            Piece.WHITE_PAWN to 8, Piece.WHITE_KNIGHT to 2, Piece.WHITE_BISHOP to 2,
+            Piece.WHITE_ROOK to 2, Piece.WHITE_QUEEN to 1,
+        )
+        val initialBlack = mapOf(
+            Piece.BLACK_PAWN to 8, Piece.BLACK_KNIGHT to 2, Piece.BLACK_BISHOP to 2,
+            Piece.BLACK_ROOK to 2, Piece.BLACK_QUEEN to 1,
+        )
+        val onBoard = mutableMapOf<Piece, Int>()
+        for (sq in Square.values()) {
+            if (sq == Square.NONE) continue
+            val p = displayBoard.getPiece(sq)
+            if (p != Piece.NONE) onBoard[p] = (onBoard[p] ?: 0) + 1
         }
+        val pieceValues = mapOf(
+            Piece.WHITE_QUEEN to 9, Piece.WHITE_ROOK to 5, Piece.WHITE_BISHOP to 3, Piece.WHITE_KNIGHT to 3, Piece.WHITE_PAWN to 1,
+            Piece.BLACK_QUEEN to 9, Piece.BLACK_ROOK to 5, Piece.BLACK_BISHOP to 3, Piece.BLACK_KNIGHT to 3, Piece.BLACK_PAWN to 1,
+        )
+
+        // Black pieces captured BY WHITE
+        val capturedByWhite = StringBuilder()
+        var whiteGained = 0
+        val blackOrder = listOf(
+            Piece.BLACK_QUEEN to "♛", Piece.BLACK_ROOK to "♜",
+            Piece.BLACK_BISHOP to "♝", Piece.BLACK_KNIGHT to "♞", Piece.BLACK_PAWN to "♟",
+        )
+        for ((piece, sym) in blackOrder) {
+            val captured = ((initialBlack[piece] ?: 0) - (onBoard[piece] ?: 0)).coerceAtLeast(0)
+            repeat(captured) { capturedByWhite.append(sym) }
+            whiteGained += captured * (pieceValues[piece] ?: 0)
+        }
+
+        // White pieces captured BY BLACK
+        val capturedByBlack = StringBuilder()
+        var blackGained = 0
+        val whiteOrder = listOf(
+            Piece.WHITE_QUEEN to "♕", Piece.WHITE_ROOK to "♖",
+            Piece.WHITE_BISHOP to "♗", Piece.WHITE_KNIGHT to "♘", Piece.WHITE_PAWN to "♙",
+        )
+        for ((piece, sym) in whiteOrder) {
+            val captured = ((initialWhite[piece] ?: 0) - (onBoard[piece] ?: 0)).coerceAtLeast(0)
+            repeat(captured) { capturedByBlack.append(sym) }
+            blackGained += captured * (pieceValues[piece] ?: 0)
+        }
+
+        return Triple(capturedByWhite.toString(), capturedByBlack.toString(), whiteGained - blackGained)
     }
 
     // ── SAN generation ─────────────────────────────────────────────────────────
 
     private fun computeSan(board: Board, move: Move): String {
-        val from = move.from
-        val to   = move.to
+        val from = move.from; val to = move.to
         val piece = board.getPiece(from)
-
-        // Castling — king moves 2 files
         if (piece.pieceType == PieceType.KING) {
-            val fromFile = from.value()[0] - 'A'
-            val toFile   = to.value()[0] - 'A'
-            if (kotlin.math.abs(fromFile - toFile) >= 2) {
-                return if (toFile > fromFile) "O-O" else "O-O-O"
-            }
+            val ff = from.value()[0] - 'A'; val tf = to.value()[0] - 'A'
+            if (kotlin.math.abs(ff - tf) >= 2) return if (tf > ff) "O-O" else "O-O-O"
         }
-
         val toStr = to.value().lowercase()
-
-        // En passant: pawn captures to empty square on different file
         val isCapture = board.getPiece(to) != Piece.NONE ||
-            (piece.pieceType == PieceType.PAWN &&
-             from.value()[0] != to.value()[0] &&
-             board.getPiece(to) == Piece.NONE)
-
+            (piece.pieceType == PieceType.PAWN && from.value()[0] != to.value()[0] && board.getPiece(to) == Piece.NONE)
         if (piece.pieceType == PieceType.PAWN) {
-            val promoSuffix = if (move.promotion != Piece.NONE) {
-                "=" + when(move.promotion.pieceType) {
-                    PieceType.QUEEN  -> "Q"; PieceType.ROOK   -> "R"
-                    PieceType.BISHOP -> "B"; PieceType.KNIGHT -> "N"
-                    else             -> "Q"
-                }
+            val promoSuffix = if (move.promotion != Piece.NONE) "=" + when(move.promotion.pieceType) {
+                PieceType.QUEEN -> "Q"; PieceType.ROOK -> "R"; PieceType.BISHOP -> "B"; else -> "N"
             } else ""
-            return if (isCapture) {
-                "${from.value()[0].lowercaseChar()}x$toStr$promoSuffix"
-            } else {
-                "$toStr$promoSuffix"
-            }
+            return if (isCapture) "${from.value()[0].lowercaseChar()}x$toStr$promoSuffix" else "$toStr$promoSuffix"
         }
-
         val pieceChar = when(piece.pieceType) {
-            PieceType.KNIGHT -> "N"; PieceType.BISHOP -> "B"
-            PieceType.ROOK   -> "R"; PieceType.QUEEN  -> "Q"
-            PieceType.KING   -> "K"; else              -> ""
+            PieceType.KNIGHT -> "N"; PieceType.BISHOP -> "B"; PieceType.ROOK -> "R"
+            PieceType.QUEEN  -> "Q"; PieceType.KING   -> "K"; else -> ""
         }
-
-        // Disambiguation: find other pieces of the same type/side that can reach 'to'
         val ambiguous = board.legalMoves().filter { m ->
             m != move && m.to == to &&
             board.getPiece(m.from).pieceType == piece.pieceType &&
             board.getPiece(m.from).pieceSide == piece.pieceSide
         }
-
         val disambig = when {
             ambiguous.isEmpty() -> ""
-            ambiguous.all { it.from.value()[0] != from.value()[0] } ->
-                from.value()[0].lowercaseChar().toString()
-            ambiguous.all { it.from.value()[1] != from.value()[1] } ->
-                from.value()[1].toString()
+            ambiguous.all { it.from.value()[0] != from.value()[0] } -> from.value()[0].lowercaseChar().toString()
+            ambiguous.all { it.from.value()[1] != from.value()[1] } -> from.value()[1].toString()
             else -> from.value().lowercase()
         }
-
-        val captureX = if (isCapture) "x" else ""
-        return "$pieceChar$disambig$captureX$toStr"
+        return "$pieceChar$disambig${if (isCapture) "x" else ""}$toStr"
     }
-
-    // ── SAN → Move (for PGN import) ────────────────────────────────────────────
 
     private fun sanToMove(san: String): Move? {
         val lm = board.legalMoves()
         val s = san.trimEnd('+', '#', '!', '?').trim()
         if (s.isBlank()) return null
-
-        // Castling
-        if (s == "O-O" || s == "0-0") {
-            return lm.firstOrNull { m ->
-                board.getPiece(m.from).pieceType == PieceType.KING &&
-                (m.to.value() == "G1" || m.to.value() == "G8")
-            }
-        }
-        if (s == "O-O-O" || s == "0-0-0") {
-            return lm.firstOrNull { m ->
-                board.getPiece(m.from).pieceType == PieceType.KING &&
-                (m.to.value() == "C1" || m.to.value() == "C8")
-            }
-        }
-
-        // Promotion: e8=Q, exd8=Q, e8Q
+        if (s == "O-O" || s == "0-0")
+            return lm.firstOrNull { m -> board.getPiece(m.from).pieceType == PieceType.KING && (m.to.value() == "G1" || m.to.value() == "G8") }
+        if (s == "O-O-O" || s == "0-0-0")
+            return lm.firstOrNull { m -> board.getPiece(m.from).pieceType == PieceType.KING && (m.to.value() == "C1" || m.to.value() == "C8") }
         val promoRegex = Regex("([a-hA-H])([x×]?)([a-hA-H][18])=?([QRBNqrbn])")
         val promoMatch = promoRegex.find(s)
         if (promoMatch != null) {
@@ -447,64 +448,74 @@ class ChessGame {
             }
             return lm.firstOrNull { it.to == toSq && it.promotion == promoPiece }
         }
-
         val isPieceMov = s[0].isUpperCase() && s[0] != 'O'
         val pieceType = if (isPieceMov) when(s[0]) {
             'N' -> PieceType.KNIGHT; 'B' -> PieceType.BISHOP; 'R' -> PieceType.ROOK
             'Q' -> PieceType.QUEEN;  'K' -> PieceType.KING;   else -> PieceType.PAWN
         } else PieceType.PAWN
-
-        val stripped = (if (isPieceMov) s.substring(1) else s)
-            .replace("x", "").replace("×", "")
+        val stripped = (if (isPieceMov) s.substring(1) else s).replace("x", "").replace("×", "")
         if (stripped.length < 2) return null
-
         val toStr = stripped.takeLast(2).uppercase()
         val disambig = stripped.dropLast(2).lowercase()
-
         val toSq = try { Square.valueOf(toStr) } catch (e: Exception) { return null }
-
         return lm.firstOrNull { m ->
-            m.to == toSq &&
-            board.getPiece(m.from).pieceType == pieceType &&
+            m.to == toSq && board.getPiece(m.from).pieceType == pieceType &&
             (disambig.isEmpty() || m.from.value().lowercase().contains(disambig))
         }
     }
 
     private fun updateState() {
-        val isOver = board.isMated || board.isDraw || board.isStaleMate
-        val result = when {
+        val isHistorical = viewIndex < fenHistory.size - 1
+        val displayFen   = fenHistory.getOrElse(viewIndex) { board.fen }
+
+        // For historical positions use a temporary board loaded from the historical FEN
+        val displayBoard = if (isHistorical) Board().also { it.loadFromFen(displayFen) } else board
+
+        // Game-over state is always from the LIVE board
+        val liveIsOver = board.isMated || board.isDraw || board.isStaleMate
+        val liveResult = when {
             board.isMated     -> if (board.sideToMove == Side.WHITE) "0-1" else "1-0"
             board.isDraw      -> "1/2-1/2"
             board.isStaleMate -> "1/2-1/2"
             else              -> null
         }
-        val lastMove = moveHistory.lastOrNull()?.let { it.from to it.to }
 
-        val checkedKingSquare = if (board.isKingAttacked) {
-            findKingSquare(board.sideToMove)
-        } else null
+        // Last move highlighted = move that produced viewIndex position
+        val lastMove = if (viewIndex > 0 && viewIndex <= moveHistory.size)
+            moveHistory[viewIndex - 1].let { it.from to it.to }
+        else null
+
+        val checkedKingSquare = if (displayBoard.isKingAttacked)
+            findKingSquare(displayBoard, displayBoard.sideToMove)
+        else null
+
+        val (capturedByWhite, capturedByBlack, materialAdv) = computeCapturedPieces(displayBoard)
 
         _state.value = _state.value.copy(
-            fen = board.fen,
-            moves = moveHistory.toList(),
-            selectedSquare = null,
-            legalMoves = emptyList(),
-            lastMove = lastMove,
-            isWhiteTurn = board.sideToMove == Side.WHITE,
-            isGameOver = isOver,
-            gameResult = result,
-            currentMoveIndex = moveHistory.size - 1,
-            canGoBack = moveHistory.isNotEmpty(),
-            canGoForward = redoStack.isNotEmpty(),
-            checkedKingSquare = checkedKingSquare,
+            fen                = displayFen,
+            moves              = moveHistory.toList(),
+            selectedSquare     = null,
+            legalMoves         = emptyList(),
+            lastMove           = lastMove,
+            isWhiteTurn        = displayBoard.sideToMove == Side.WHITE,
+            isGameOver         = liveIsOver && !isHistorical,
+            gameResult         = if (!isHistorical) liveResult else null,
+            currentMoveIndex   = viewIndex - 1,
+            canGoBack          = viewIndex > 0,
+            canGoForward       = viewIndex < fenHistory.size - 1,
+            checkedKingSquare  = checkedKingSquare,
+            isInHistoricalView = isHistorical,
+            capturedByWhite    = capturedByWhite,
+            capturedByBlack    = capturedByBlack,
+            materialAdvantage  = materialAdv,
         )
     }
 
-    private fun findKingSquare(side: Side): String? {
+    private fun findKingSquare(b: Board, side: Side): String? {
         val kingPiece = if (side == Side.WHITE) Piece.WHITE_KING else Piece.BLACK_KING
         for (sq in Square.values()) {
             if (sq == Square.NONE) continue
-            if (board.getPiece(sq) == kingPiece) return sq.value().lowercase()
+            if (b.getPiece(sq) == kingPiece) return sq.value().lowercase()
         }
         return null
     }
