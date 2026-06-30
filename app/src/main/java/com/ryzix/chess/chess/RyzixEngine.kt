@@ -13,11 +13,8 @@ data class EngineSettings(
     val multiPv: Int = 3,
     val threads: Int = 1,
     val hashMb: Int = 16,
-    // UCI ELO limiting — set to true + eloRating for humanoid weak play
     val limitStrength: Boolean = false,
     val eloRating: Int = 1500,
-    // Humanoid: weighted random selection from top-3 moves (60/30/10%)
-    // makes Ryzix play strong but unpredictably varied — never the exact same game twice
     val humanoidMode: Boolean = false,
 )
 
@@ -46,33 +43,30 @@ val STOCKFISH_LEVELS = listOf(
     EngineSettings(skillLevel = 20, searchTimeMs = 2000, multiPv = 3, threads = 2),
 )
 
-// Full-strength "Stockfish 16" config for AI vs AI — absolute maximum
+// Stockfish 16 at absolute maximum — no time cap in AI vs AI
 val SF_BATTLE_SETTINGS = EngineSettings(
     skillLevel    = 20,
-    searchTimeMs  = 5000,   // 5 s per move — deepest practical on mobile
+    searchTimeMs  = 30000,  // 30 s — let it search as deep as it can
     multiPv       = 1,
-    threads       = 4,      // saturate all cores
-    hashMb        = 256,    // maximum hash table SF16 benefits from on mobile
+    threads       = 4,
+    hashMb        = 256,
     limitStrength = false,
     humanoidMode  = false,
 )
 
-// Ryzix "5000 ELO" humanoid config for AI vs AI
-// Max resources + MultiPV-3 weighted random selection → superhuman strength,
-// unpredictable variety — never the same game twice.
+// Ryzix at maximum strength — no humanoid mode, pure best-move search
 val RYZIX_BATTLE_SETTINGS = EngineSettings(
     skillLevel    = 20,
-    searchTimeMs  = 8000,   // 8 s per move — deeper search than SF16
-    multiPv       = 3,      // required for humanoid weighted selection
+    searchTimeMs  = 30000,  // 30 s — match SF16 time budget
+    multiPv       = 1,      // single best-move search for max depth
     threads       = 4,
-    hashMb        = 128,
+    hashMb        = 256,
     limitStrength = false,
-    humanoidMode  = true,   // 60/30/10% weighted pick from top-3 moves
+    humanoidMode  = false,  // always play the engine's best move
 )
 
 class RyzixEngine(
     private val context: Context,
-    /** Native library filename to use as the UCI engine process (e.g. "libryzix.so" or "libstockfish.so") */
     private val libName: String = "libryzix.so",
 ) {
     companion object {
@@ -99,11 +93,8 @@ class RyzixEngine(
     var isReady = false
         private set
 
-    // Completed when the first "readyok" arrives after init — lets callers
-    // await the engine being truly ready instead of guessing with a fixed delay.
     private val _readySignal = kotlinx.coroutines.CompletableDeferred<Unit>()
 
-    /** Suspends until the engine sends its first "readyok" or [timeoutMs] elapses. */
     suspend fun waitForReady(timeoutMs: Long = 8000): Boolean {
         return try {
             kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { _readySignal.await() } != null
@@ -113,13 +104,10 @@ class RyzixEngine(
     @Volatile private var pendingFen: String? = null
     @Volatile private var pendingSettings: EngineSettings? = null
     @Volatile private var isAnalysisPending = false
-
     @Volatile private var pendingSearchFen: String? = null
-    // Captured when a search actually starts — available when bestmove arrives
     @Volatile private var activeSearchSettings: EngineSettings? = null
     @Volatile private var pendingSearchSettings: EngineSettings? = null
     @Volatile private var isSearchPending = false
-
     @Volatile private var stoppingForRestart = false
 
     private fun findBinary(): File? {
@@ -164,14 +152,12 @@ class RyzixEngine(
                     when {
                         line == "readyok" -> {
                             isReady = true
-                            // Signal waitForReady() callers on the very first readyok.
                             if (!_readySignal.isCompleted) _readySignal.complete(Unit)
                             if (isAnalysisPending) {
                                 isAnalysisPending = false
                                 val fen = pendingFen
                                 val settings = pendingSettings
-                                pendingFen = null
-                                pendingSettings = null
+                                pendingFen = null; pendingSettings = null
                                 if (fen != null && settings != null) {
                                     stoppingForRestart = false
                                     sendCommand("ucinewgame")
@@ -183,10 +169,9 @@ class RyzixEngine(
                                 isSearchPending = false
                                 val fen = pendingSearchFen
                                 val settings = pendingSearchSettings
-                                pendingSearchFen = null
-                                pendingSearchSettings = null
+                                pendingSearchFen = null; pendingSearchSettings = null
                                 if (fen != null && settings != null) {
-                                    activeSearchSettings = settings  // captured for humanoid bestmove selection
+                                    activeSearchSettings = settings
                                     stoppingForRestart = false
                                     sendCommand("ucinewgame")
                                     sendCommand("position fen $fen")
@@ -198,18 +183,14 @@ class RyzixEngine(
                         line.startsWith("bestmove") -> {
                             val wasRestart = stoppingForRestart
                             stoppingForRestart = false
-
                             if (!wasRestart && lineBuffer.isNotEmpty()) {
                                 val sorted = lineBuffer.values.sortedBy { it.rank }
                                 _analysisFlow.emit(sorted)
                             }
-
                             if (!wasRestart) {
                                 val parts = line.split(" ")
                                 val engineBest = if (parts.size >= 2) parts[1] else null
                                 if (engineBest != null && engineBest != "(none)") {
-                                    // Humanoid mode: pick from top-3 moves with weighted randomness
-                                    // so Ryzix never plays the exact same game twice yet stays superhuman.
                                     val chosen = if (activeSearchSettings?.humanoidMode == true
                                         && lineBuffer.size >= 2) {
                                         selectHumanoidMove(lineBuffer.values.toList()) ?: engineBest
@@ -219,7 +200,6 @@ class RyzixEngine(
                                     _bestMoveFlow.emit(chosen)
                                 }
                             }
-
                             lineBuffer.clear()
                             lastEmittedDepth = -1
                         }
@@ -253,7 +233,6 @@ class RyzixEngine(
     }
 
     fun applySettings(settings: EngineSettings) {
-        // ELO limiting must be set before skill level — order matters for some engines
         if (settings.limitStrength) {
             sendCommand("setoption name UCI_LimitStrength value true")
             sendCommand("setoption name UCI_Elo value ${settings.eloRating}")
@@ -266,15 +245,9 @@ class RyzixEngine(
         sendCommand("setoption name MultiPV value ${settings.multiPv}")
     }
 
-    /**
-     * Weighted random selection from top-3 analysis lines.
-     * Weights: 1st move 60%, 2nd 30%, 3rd 10% — only included when within eval thresholds.
-     * When in a winning or losing forced sequence (isMate), always plays the best move.
-     */
     private fun selectHumanoidMove(lines: List<AnalysisLine>): String? {
         val sorted = lines.sortedBy { it.rank }
         val best = sorted.firstOrNull() ?: return null
-        // In forced mate sequences always play the best line
         if (best.isMate) return best.move
         val candidates = mutableListOf<Pair<String, Double>>()
         candidates.add(best.move to 0.60)
@@ -284,67 +257,44 @@ class RyzixEngine(
         sorted.getOrNull(2)
             ?.takeIf { !it.isMate && kotlin.math.abs(it.eval - best.eval) < 0.60f }
             ?.let { candidates.add(it.move to 0.10) }
-        // Single candidate → no randomness needed
         if (candidates.size == 1) return best.move
         val total = candidates.sumOf { it.second }
         val r = Math.random() * total
         var acc = 0.0
-        for ((move, weight) in candidates) {
-            acc += weight
-            if (r < acc) return move
-        }
+        for ((move, weight) in candidates) { acc += weight; if (r < acc) return move }
         return candidates.last().first
     }
 
     fun startAnalysis(fen: String, settings: EngineSettings) {
-        lineBuffer.clear()
-        lastEmittedDepth = -1
-        pendingFen = fen
-        pendingSettings = settings
-        isAnalysisPending = true
-        stoppingForRestart = true
-        sendCommand("stop")
-        sendCommand("isready")
+        lineBuffer.clear(); lastEmittedDepth = -1
+        pendingFen = fen; pendingSettings = settings
+        isAnalysisPending = true; stoppingForRestart = true
+        sendCommand("stop"); sendCommand("isready")
     }
 
     fun startSearch(fen: String, settings: EngineSettings) {
-        lineBuffer.clear()
-        lastEmittedDepth = -1
-        pendingSearchFen = fen
-        pendingSearchSettings = settings
-        isSearchPending = true
-        stoppingForRestart = true
-        sendCommand("stop")
-        sendCommand("isready")
+        lineBuffer.clear(); lastEmittedDepth = -1
+        pendingSearchFen = fen; pendingSearchSettings = settings
+        isSearchPending = true; stoppingForRestart = true
+        sendCommand("stop"); sendCommand("isready")
     }
 
     fun stop() {
-        lineBuffer.clear()
-        lastEmittedDepth = -1
-        isAnalysisPending = false
-        isSearchPending = false
-        stoppingForRestart = true
-        pendingFen = null
-        pendingSettings = null
-        pendingSearchFen = null
-        pendingSearchSettings = null
-        activeSearchSettings = null
+        lineBuffer.clear(); lastEmittedDepth = -1
+        isAnalysisPending = false; isSearchPending = false; stoppingForRestart = true
+        pendingFen = null; pendingSettings = null; pendingSearchFen = null
+        pendingSearchSettings = null; activeSearchSettings = null
         sendCommand("stop")
     }
 
     fun quit() {
-        sendCommand("quit")
-        scope.cancel()
-        process?.destroy()
-        writer?.close()
-        reader?.close()
+        sendCommand("quit"); scope.cancel(); process?.destroy()
+        writer?.close(); reader?.close()
     }
 
     private fun sendCommand(cmd: String) {
         try {
-            writer?.write(cmd)
-            writer?.newLine()
-            writer?.flush()
+            writer?.write(cmd); writer?.newLine(); writer?.flush()
         } catch (e: Exception) {
             Log.e(TAG, "Send command failed: $cmd -> ${e.message}")
         }
