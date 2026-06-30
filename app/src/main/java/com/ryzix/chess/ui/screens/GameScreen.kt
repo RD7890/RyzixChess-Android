@@ -121,7 +121,12 @@ fun GameScreen(
             }
         }
 
-        // ── Top player bar ───────────────────────────────────────────────────
+        // ── Top player bar + top captured pieces ─────────────────────────────
+        val topCaptured    = if (!state.isFlipped) state.capturedByWhite else state.capturedByBlack
+        val bottomCaptured = if (!state.isFlipped) state.capturedByBlack else state.capturedByWhite
+        val topAdvantage   = if (!state.isFlipped) -state.materialAdvantage else state.materialAdvantage
+        val bottomAdvantage = if (!state.isFlipped) state.materialAdvantage else -state.materialAdvantage
+
         if (isAiVsAi) {
             AiPlayerBar(
                 label      = if (!bottomIsWhite) aiState.whiteLabel else aiState.blackLabel,
@@ -144,6 +149,13 @@ fun GameScreen(
             )
         }
 
+        // Top captured pieces bar (pieces captured from the top player's opponent)
+        CapturedPiecesBar(
+            symbols           = topCaptured,
+            materialAdvantage = if (topAdvantage > 0) topAdvantage else 0,
+            modifier          = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        )
+
         // ── Chess board ──────────────────────────────────────────────────────
         BoxWithConstraints(
             modifier = Modifier
@@ -159,6 +171,13 @@ fun GameScreen(
                 showCoordinates = true,
             )
         }
+
+        // Bottom captured pieces bar (pieces captured from the bottom player's opponent)
+        CapturedPiecesBar(
+            symbols           = bottomCaptured,
+            materialAdvantage = if (bottomAdvantage > 0) bottomAdvantage else 0,
+            modifier          = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        )
 
         // ── Bottom player bar ─────────────────────────────────────────────────
         if (isAiVsAi) {
@@ -211,18 +230,19 @@ fun GameScreen(
                 isReviewMode     = isReviewMode,
             )
             StockfishPanel(
-                eval            = eval,
-                isThinking      = isThinking,
-                engineEnabled   = engineEnabled,
-                engineAvailable = engineAvailable,
-                analysisLines   = analysisLines,
-                moves           = state.moves,
-                showMoveList    = showMoveList,
-                moveGrade       = moveGrade,
-                onToggleEngine  = { vm.toggleEngine() },
-                modifier        = Modifier.fillMaxWidth(),
-                isOtbMode       = isOtbMode,
+                eval              = eval,
+                isThinking        = isThinking,
+                engineEnabled     = engineEnabled,
+                engineAvailable   = engineAvailable,
+                analysisLines     = analysisLines,
+                moves             = state.moves,
+                showMoveList      = showMoveList,
+                moveGrade         = moveGrade,
+                onToggleEngine    = { vm.toggleEngine() },
+                modifier          = Modifier.fillMaxWidth(),
+                isOtbMode         = isOtbMode,
                 analysisModelName = otbModel.displayName,
+                currentMoveIndex  = state.currentMoveIndex,
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -559,19 +579,26 @@ private fun GameOverDialog(
     AlertDialog(
         onDismissRequest = onAnalyse,
         title = { Text(title, fontWeight = FontWeight.Bold) },
-        text  = { Text(subtitle) },
-        confirmButton = {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        text  = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(subtitle, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(4.dp))
                 Button(onClick = onNewGame, modifier = Modifier.fillMaxWidth()) { Text("New Game") }
                 OutlinedButton(onClick = onAnalyse, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Analytics, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Analyse")
+                    Icon(Icons.Rounded.Analytics, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Analyse")
                 }
                 OutlinedButton(onClick = { onExport(pgn) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Rounded.Share, null, modifier = Modifier.size(16.dp)); Spacer(Modifier.width(6.dp)); Text("Export PGN")
+                    Icon(Icons.Rounded.Share, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Export PGN")
                 }
+                TextButton(onClick = onClose, modifier = Modifier.fillMaxWidth()) { Text("Close") }
             }
         },
-        dismissButton = { TextButton(onClick = onClose) { Text("Close") } },
+        confirmButton = {},
+        dismissButton = {},
     )
 }
 
@@ -649,7 +676,7 @@ private fun NewGameDialog(
                                     Text("⚔", fontSize = 18.sp)
                                     Column {
                                         Text("Engine Battle", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold), color = Color(0xFF4FC3F7))
-                                        Text("Stockfish 16 (full strength) vs Ryzix 1000 ELO (humanoid). Watch them play.", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4FC3F7).copy(alpha = 0.7f))
+                                        Text("Stockfish 16 (full strength) vs Ryzix 5000 (max strength). Watch them play.", style = MaterialTheme.typography.labelSmall, color = Color(0xFF4FC3F7).copy(alpha = 0.7f))
                                     }
                                 }
                             }
@@ -678,7 +705,7 @@ private fun NewGameDialog(
                                 ) {
                                     Column(modifier = Modifier.padding(14.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                         Text("R", fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
-                                        Text("Ryzix 1000", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
+                                        Text("Ryzix 5000", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
                                         Text("plays White ♔", style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp), color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f), textAlign = TextAlign.Center)
                                     }
                                 }
@@ -767,6 +794,38 @@ fun InlineEngineSettings(
                 color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
             Text("Level ${prefs.levelIndex + 1} / 12", style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+        }
+    }
+}
+
+// ── Captured pieces bar ───────────────────────────────────────────────────────
+
+@Composable
+private fun CapturedPiecesBar(
+    symbols: String,
+    materialAdvantage: Int,
+    modifier: Modifier = Modifier,
+) {
+    if (symbols.isEmpty() && materialAdvantage <= 0) return
+    Row(
+        modifier = modifier.padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        if (symbols.isNotEmpty()) {
+            Text(
+                text = symbols,
+                fontSize = 13.sp,
+                lineHeight = 16.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f),
+            )
+        }
+        if (materialAdvantage > 0) {
+            Text(
+                text = "+$materialAdvantage",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+            )
         }
     }
 }
