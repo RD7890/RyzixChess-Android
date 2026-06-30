@@ -218,6 +218,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var preMoveEval        = 0f
     @Volatile private var preMoveLines: List<AnalysisLine> = emptyList()
     @Volatile private var engineMoveInFlight = false
+    @Volatile private var battleThinkMs      = 5000
     private var gameInitialized = false
     private val gradeCache = mutableMapOf<String, MoveGradeResult>()
 
@@ -305,27 +306,30 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private fun collectAiVsAiOutput() {
         viewModelScope.launch {
             sfAiEngine.bestMoveFlow.collect { bestMove ->
+                // Always clear thinking flags first — prevents infinite "Thinking…" on early return
+                val isWhiteTurn = gameState.value.isWhiteTurn
+                _aiVsAiState.value = _aiVsAiState.value.copy(
+                    whiteThinking = if (isWhiteTurn) false else _aiVsAiState.value.whiteThinking,
+                    blackThinking = if (!isWhiteTurn) false else _aiVsAiState.value.blackThinking,
+                )
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
+                if (!_aiVsAiState.value.isActive) return@collect
                 if (gameState.value.isGameOver) return@collect
                 if (gameState.value.isInHistoricalView) return@collect
-                val isWhite = gameState.value.isWhiteTurn
-                _aiVsAiState.value = _aiVsAiState.value.copy(
-                    whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
-                    blackThinking = if (!isWhite) false else _aiVsAiState.value.blackThinking,
-                )
                 handleAiVsAiMove(bestMove)
             }
         }
         viewModelScope.launch {
             ryzixAiEngine.bestMoveFlow.collect { bestMove ->
+                val isWhiteTurn = gameState.value.isWhiteTurn
+                _aiVsAiState.value = _aiVsAiState.value.copy(
+                    whiteThinking = if (isWhiteTurn) false else _aiVsAiState.value.whiteThinking,
+                    blackThinking = if (!isWhiteTurn) false else _aiVsAiState.value.blackThinking,
+                )
                 if (_gameMode.value != GameMode.AI_VS_AI) return@collect
+                if (!_aiVsAiState.value.isActive) return@collect
                 if (gameState.value.isGameOver) return@collect
                 if (gameState.value.isInHistoricalView) return@collect
-                val isWhite = gameState.value.isWhiteTurn
-                _aiVsAiState.value = _aiVsAiState.value.copy(
-                    whiteThinking = if (isWhite) false else _aiVsAiState.value.whiteThinking,
-                    blackThinking = if (!isWhite) false else _aiVsAiState.value.blackThinking,
-                )
                 handleAiVsAiMove(bestMove)
             }
         }
@@ -360,8 +364,9 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             )
             delay(delayMs)
 
+            // Guard: stop() may have been called during the delay (user paused / navigated away)
             if (_gameMode.value != GameMode.AI_VS_AI || gameState.value.isGameOver
-                || gameState.value.isInHistoricalView) {
+                || gameState.value.isInHistoricalView || !_aiVsAiState.value.isActive) {
                 _aiVsAiState.value = _aiVsAiState.value.copy(whiteThinking = false, blackThinking = false)
                 return@launch
             }
@@ -388,8 +393,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            // Use engine — SF16 at max, Ryzix at max
-            val settings = if (currentIsSfTurn) SF_BATTLE_SETTINGS else RYZIX_BATTLE_SETTINGS
+            // Use engine with the think-time the user selected
+            val settings = if (currentIsSfTurn)
+                SF_BATTLE_SETTINGS.copy(searchTimeMs = battleThinkMs)
+            else
+                RYZIX_BATTLE_SETTINGS.copy(searchTimeMs = battleThinkMs)
             val aiEngine = if (currentIsSfTurn) sfAiEngine else ryzixAiEngine
             aiEngine.applySettings(settings)
             aiEngine.startSearch(fen, settings)
@@ -398,6 +406,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Start AI vs AI ────────────────────────────────────────────────────────
     fun startAiVsAi(sfPlaysWhite: Boolean, thinkSecs: Int = 5) {
+        battleThinkMs = thinkSecs * 1000
         engine.stop(); sfAiEngine.stop(); ryzixAiEngine.stop()
         _isEngineThinking.value  = false
         engineMoveInFlight       = false
