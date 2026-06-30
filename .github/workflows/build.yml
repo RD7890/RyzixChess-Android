@@ -102,7 +102,9 @@ jobs:
 
             curl -fsSL https://github.com/RD7890/Ryzix/archive/refs/heads/main.tar.gz \
               | tar -xz -C /tmp
-            "$CXX" -O2 -DNDEBUG -std=c++17 -static-libstdc++ -lm \
+            "$CXX" -O3 -DNDEBUG -std=c++17 -march=armv8-a \
+              -fno-exceptions -fno-rtti \
+              -static-libstdc++ -lm \
               /tmp/Ryzix-main/src/ryzix.cpp \
               -o app/src/main/jniLibs/arm64-v8a/libryzix.so
             echo "Compiled: $(wc -c < app/src/main/jniLibs/arm64-v8a/libryzix.so) bytes"
