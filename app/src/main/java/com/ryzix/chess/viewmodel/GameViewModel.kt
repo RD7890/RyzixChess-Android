@@ -397,7 +397,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ── Start AI vs AI ────────────────────────────────────────────────────────
-    fun startAiVsAi(sfPlaysWhite: Boolean) {
+    fun startAiVsAi(sfPlaysWhite: Boolean, thinkSecs: Int = 5) {
         engine.stop(); sfAiEngine.stop(); ryzixAiEngine.stop()
         _isEngineThinking.value  = false
         engineMoveInFlight       = false
