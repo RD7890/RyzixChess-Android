@@ -34,10 +34,6 @@ import com.ryzix.chess.viewmodel.MoveGrade
 import com.ryzix.chess.viewmodel.MoveGradeResult
 import kotlinx.coroutines.launch
 
-// ────────────────────────────────────────────────────────────────────────────
-//  Public: Ryzix analysis strip + move list
-// ────────────────────────────────────────────────────────────────────────────
-
 @Composable
 fun StockfishPanel(
     eval: Float,
@@ -50,21 +46,16 @@ fun StockfishPanel(
     moveGrade: MoveGradeResult?,
     onToggleEngine: () -> Unit,
     modifier: Modifier = Modifier,
-    // When false (vs Ryzix mode), hide analysis lines and arrows from the user
     isOtbMode: Boolean = true,
-    // OTB analysis model display label (Ryzix Engine or Stockfish 16)
     analysisModelName: String = "Ryzix Engine",
+    currentMoveIndex: Int = -1,
 ) {
     var expanded by remember { mutableStateOf(true) }
 
-    // No animateContentSize — it was causing excessive recompositions under rapid eval updates
     Column(modifier = modifier) {
 
         // ── Engine strip ───────────────────────────────────────────────
-        Surface(
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 4.dp,
-        ) {
+        Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 4.dp) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -88,19 +79,16 @@ fun StockfishPanel(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
 
-                // Only show eval chip in OTB mode
                 if (isOtbMode && engineEnabled && engineAvailable) {
                     EvalChip(eval = eval, isThinking = isThinking)
                     Spacer(modifier = Modifier.width(8.dp))
                 }
 
-                // Only show move grade badge in OTB mode
                 if (isOtbMode && moveGrade != null && engineEnabled && engineAvailable) {
                     MoveGradeBadge(grade = moveGrade)
                     Spacer(modifier = Modifier.width(6.dp))
                 }
 
-                // In vs Ryzix mode, show "Playing" indicator when engine is thinking
                 if (!isOtbMode && isThinking) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -138,7 +126,6 @@ fun StockfishPanel(
                     Spacer(modifier = Modifier.width(6.dp))
                 }
 
-                // Engine toggle only in OTB mode
                 if (isOtbMode) {
                     Surface(
                         shape = RoundedCornerShape(6.dp),
@@ -165,7 +152,6 @@ fun StockfishPanel(
                         )
                     }
                 } else {
-                    // In vs Ryzix mode show static label
                     Surface(
                         shape = RoundedCornerShape(6.dp),
                         color = if (engineAvailable) Color(0xFF1A2E1A) else MaterialTheme.colorScheme.errorContainer,
@@ -179,7 +165,6 @@ fun StockfishPanel(
                     }
                 }
 
-                // Expand/collapse only in OTB mode
                 if (isOtbMode && engineEnabled && engineAvailable && (isThinking || analysisLines.isNotEmpty())) {
                     Spacer(modifier = Modifier.width(6.dp))
                     Icon(
@@ -194,19 +179,10 @@ fun StockfishPanel(
 
         // ── Analysis lines — OTB mode only ───────────────────────────
         if (isOtbMode && expanded && engineEnabled && engineAvailable) {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                tonalElevation = 2.dp,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(116.dp),           // fixed — board never shifts
-                ) {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, tonalElevation = 2.dp) {
+                Box(modifier = Modifier.fillMaxWidth().height(116.dp)) {
                     Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxSize().padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         if (isThinking && analysisLines.isEmpty()) {
@@ -215,8 +191,7 @@ fun StockfishPanel(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp,
+                                    modifier = Modifier.size(14.dp), strokeWidth = 2.dp,
                                     color = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
                                 )
                                 Text(
@@ -246,22 +221,21 @@ fun StockfishPanel(
             enter = fadeIn(tween(150)) + expandVertically(tween(180)),
             exit  = fadeOut(tween(100)) + shrinkVertically(tween(180)),
         ) {
-            MoveListRow(moves = moves, modifier = Modifier.fillMaxWidth())
+            MoveListRow(
+                moves            = moves,
+                currentMoveIndex = currentMoveIndex,
+                modifier         = Modifier.fillMaxWidth(),
+            )
         }
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-//  Move grade badge
-// ────────────────────────────────────────────────────────────────────────────
+// ── Move grade badge ──────────────────────────────────────────────────────────
 
 @Composable
 private fun MoveGradeBadge(grade: MoveGradeResult) {
     val bgColor = Color(grade.grade.colorHex)
-    Surface(
-        shape = RoundedCornerShape(5.dp),
-        color = bgColor.copy(alpha = 0.18f),
-    ) {
+    Surface(shape = RoundedCornerShape(5.dp), color = bgColor.copy(alpha = 0.18f)) {
         Row(
             modifier = Modifier.padding(horizontal = 7.dp, vertical = 3.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -272,18 +246,12 @@ private fun MoveGradeBadge(grade: MoveGradeResult) {
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                 color = bgColor,
             )
-            Text(
-                text = grade.grade.label,
-                style = MaterialTheme.typography.labelSmall,
-                color = bgColor,
-            )
+            Text(text = grade.grade.label, style = MaterialTheme.typography.labelSmall, color = bgColor)
         }
     }
 }
 
-// ────────────────────────────────────────────────────────────────────────────
-//  Private helpers
-// ────────────────────────────────────────────────────────────────────────────
+// ── Eval chip ─────────────────────────────────────────────────────────────────
 
 @Composable
 private fun EvalChip(eval: Float, isThinking: Boolean) {
@@ -293,10 +261,7 @@ private fun EvalChip(eval: Float, isThinking: Boolean) {
         eval >= 0 -> "+%.1f".format(eval)
         else      -> "%.1f".format(eval)
     }
-    Surface(
-        shape = RoundedCornerShape(6.dp),
-        color = MaterialTheme.colorScheme.surfaceVariant,
-    ) {
+    Surface(shape = RoundedCornerShape(6.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
@@ -306,6 +271,8 @@ private fun EvalChip(eval: Float, isThinking: Boolean) {
     }
 }
 
+// ── Analysis line row ─────────────────────────────────────────────────────────
+
 @Composable
 private fun AnalysisLineRow(line: AnalysisLine, bestEval: Float, isThinking: Boolean) {
     val diff = bestEval - line.eval
@@ -314,7 +281,6 @@ private fun AnalysisLineRow(line: AnalysisLine, bestEval: Float, isThinking: Boo
         diff < 0.3f    -> Color(0xFFFFC107)
         else           -> Color(0xFFF44336)
     }
-
     val moveText = uciToArrow(line.move)
     val evalText = if (line.isMate) {
         if (line.mateIn > 0) "M${line.mateIn}" else "-M${-line.mateIn}"
@@ -323,26 +289,17 @@ private fun AnalysisLineRow(line: AnalysisLine, bestEval: Float, isThinking: Boo
     }
     val contText = line.continuation.take(4).joinToString(" ") { uciToArrow(it) }
 
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.Top,
-    ) {
+    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Box(
-            modifier = Modifier
-                .padding(top = 5.dp)
-                .size(9.dp)
-                .clip(CircleShape)
-                .background(dotColor),
+            modifier = Modifier.padding(top = 5.dp).size(9.dp).clip(CircleShape).background(dotColor),
         )
         Spacer(modifier = Modifier.width(10.dp))
-
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = moveText,
                     style = MaterialTheme.typography.bodyMedium.copy(
-                        fontFamily = FontFamily.Monospace,
-                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace, fontWeight = FontWeight.SemiBold,
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -380,20 +337,28 @@ private fun uciToArrow(uci: String): String {
     return "${uci.substring(0, 2)}→${uci.substring(2, 4)}"
 }
 
-@Composable
-private fun MoveListRow(moves: List<ChessMove>, modifier: Modifier = Modifier) {
-    val listState = rememberLazyListState()
-    val scope = rememberCoroutineScope()
+// ── Move list row (with active move highlighting and auto-scroll) ──────────────
 
-    LaunchedEffect(moves.size) {
-        if (moves.isNotEmpty()) scope.launch { listState.animateScrollToItem(moves.size - 1) }
+@Composable
+private fun MoveListRow(
+    moves: List<ChessMove>,
+    currentMoveIndex: Int,
+    modifier: Modifier = Modifier,
+) {
+    val listState = rememberLazyListState()
+    val scope     = rememberCoroutineScope()
+
+    // Auto-scroll to keep the active move visible
+    LaunchedEffect(currentMoveIndex) {
+        if (currentMoveIndex >= 0) {
+            val pairIndex = currentMoveIndex / 2
+            scope.launch { listState.animateScrollToItem(pairIndex) }
+        } else if (moves.isNotEmpty()) {
+            scope.launch { listState.animateScrollToItem(0) }
+        }
     }
 
-    Surface(
-        color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 1.dp,
-        modifier = modifier,
-    ) {
+    Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp, modifier = modifier) {
         if (moves.isEmpty()) {
             Text(
                 text = "No moves yet",
@@ -409,7 +374,7 @@ private fun MoveListRow(moves: List<ChessMove>, modifier: Modifier = Modifier) {
             ) {
                 val pairs = moves.chunked(2)
                 pairs.forEachIndexed { pairIdx, pair ->
-                    item {
+                    item(key = pairIdx) {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(2.dp),
@@ -420,7 +385,11 @@ private fun MoveListRow(moves: List<ChessMove>, modifier: Modifier = Modifier) {
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
                                 fontSize = 12.sp,
                             )
-                            pair.forEach { move -> MoveChip(san = move.san, isActive = false) }
+                            pair.forEachIndexed { innerIdx, move ->
+                                val moveIdx  = pairIdx * 2 + innerIdx
+                                val isActive = moveIdx == currentMoveIndex
+                                MoveChip(san = move.san, isActive = isActive)
+                            }
                         }
                     }
                 }
